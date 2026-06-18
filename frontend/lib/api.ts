@@ -210,6 +210,18 @@ export const api = {
   async generateOrderStages(orderId: number) {
     return request<OrderStage[]>(`/api/orders/${orderId}/stages/generate`, { method: "POST" });
   },
+  // Канонический маршрут по ТЗ (12 этапов)
+  async generateCanonicalStages(orderId: number, data?: { needs_smd?: boolean; is_receiver?: boolean; needs_assembly?: boolean; replace?: boolean }) {
+    return request<{ created: number; flags: { needs_smd: boolean; is_receiver: boolean; needs_assembly: boolean }; stages: OrderStage[] }>(
+      `/api/orders/${orderId}/stages/generate-canonical`, { method: "POST", body: JSON.stringify(data || {}) }
+    );
+  },
+  // Контроль качества на этапе-гейте (AOI / ОТК)
+  async inspectStage(orderId: number, stageId: number, data: { result: "pass" | "fail"; comment?: string; photo_url?: string; needs_components?: boolean; rework_stage_id?: number }) {
+    return request<{ result: string; stage_id: number; rework_stage_id: number | null; order_status?: string }>(
+      `/api/orders/${orderId}/stages/${stageId}/inspect`, { method: "POST", body: JSON.stringify(data) }
+    );
+  },
   async addOrderStage(orderId: number, data: { stage_name: string; stage_type: string; required_role?: string; sort_order?: number; instructions?: string; next_stage_id?: number }) {
     return request<OrderStage>(`/api/orders/${orderId}/stages`, { method: "POST", body: JSON.stringify(data) });
   },
@@ -728,6 +740,43 @@ export const api = {
   async getCatalogCategories() {
     return request<string[]>("/api/catalog/categories");
   },
+
+  // ── Чат ───────────────────────────────────────────────────────────────────────
+  async getChatChannels() {
+    return request<ChatChannel[]>("/api/chat/channels");
+  },
+  async getChatUnread() {
+    return request<{ unread: number }>("/api/chat/unread");
+  },
+  async createChatChannel(name: string, member_ids?: number[]) {
+    return request<ChatChannel>("/api/chat/channels", { method: "POST", body: JSON.stringify({ name, member_ids }) });
+  },
+  async openDirectChat(user_id: number) {
+    return request<ChatChannel>("/api/chat/channels/direct", { method: "POST", body: JSON.stringify({ user_id }) });
+  },
+  async openOrderChat(orderId: number) {
+    return request<ChatChannel>(`/api/chat/order/${orderId}`);
+  },
+  async addChatMembers(channelId: number, member_ids: number[]) {
+    return request<ChatChannel>(`/api/chat/channels/${channelId}/members`, { method: "POST", body: JSON.stringify({ member_ids }) });
+  },
+  async getChatMessages(channelId: number, params?: { after_id?: number; before_id?: number; limit?: number }) {
+    const qs = new URLSearchParams();
+    if (params?.after_id) qs.set("after_id", String(params.after_id));
+    if (params?.before_id) qs.set("before_id", String(params.before_id));
+    if (params?.limit) qs.set("limit", String(params.limit));
+    const q = qs.toString();
+    return request<ChatMessage[]>(`/api/chat/channels/${channelId}/messages${q ? `?${q}` : ""}`);
+  },
+  async sendChatMessage(channelId: number, text: string, reply_to?: number) {
+    return request<ChatMessage>(`/api/chat/channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ text, reply_to }) });
+  },
+  async markChatRead(channelId: number, last_message_id: number) {
+    return request(`/api/chat/channels/${channelId}/read`, { method: "POST", body: JSON.stringify({ last_message_id }) });
+  },
+  async deleteChatMessage(messageId: number) {
+    return request(`/api/chat/messages/${messageId}`, { method: "DELETE" });
+  },
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -961,6 +1010,7 @@ export interface OrderStage {
   transferred_qty?: number;
   instructions?: string;
   next_stage_id?: number | null;
+  rework_target_type?: string | null;   // для гейтов AOI/ОТК — тип этапа возврата брака
   components: { name: string; qty: number; source?: string }[];
   est_minutes?: number | null;
   checklist?: string;        // JSON-строка [{text, done}]
@@ -1282,6 +1332,35 @@ export interface ProductCatalogItem {
   description?: string;
   unit: string;
   is_active: boolean;
+  needs_smd?: boolean;        // признаки канонического маршрута по ТЗ
+  is_receiver?: boolean;
+  needs_assembly?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChatChannel {
+  id: number;
+  kind: "group" | "direct" | "order";
+  name?: string;
+  order_id?: number | null;
+  unread: number;
+  members: { user_id: number; user_name?: string }[];
+  member_count: number;
+  last_message?: string | null;
+  last_message_author?: string | null;
+  last_message_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ChatMessage {
+  id: number;
+  channel_id: number;
+  user_id: number;
+  user_name?: string;
+  text: string;
+  reply_to?: number | null;
+  is_deleted: boolean;
+  created_at: string;
+  edited_at?: string | null;
 }

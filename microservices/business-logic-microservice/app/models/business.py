@@ -143,6 +143,7 @@ class OrderStage(Base):
     transferred_qty = Column(Integer)                 # фактически передано следующему этапу
     instructions  = Column(Text)                      # инструкция для исполнителя
     next_stage_id = Column(Integer, nullable=True)    # куда идёт после завершения (id другого order_stage)
+    rework_target_type = Column(String(50))           # для гейтов (aoi/otk): тип этапа, куда уходит брак
     components_json = Column(Text, default="[]")
     est_minutes   = Column(Integer)                   # норматив времени на этап (мин)
     checklist     = Column(Text, default="[]")        # JSON: [{text, done}]
@@ -185,6 +186,53 @@ class StageAssignee(Base):
     __table_args__ = (
         UniqueConstraint("stage_id", "user_id", name="uq_stage_user"),
     )
+
+
+class ChatChannel(Base):
+    """Канал чата. kind: group | direct | order.
+    Для order-каналов order_id указывает на заказ (один канал на заказ)."""
+    __tablename__ = "chat_channels"
+
+    id          = Column(Integer, primary_key=True)
+    kind        = Column(String(20), nullable=False, default="group")  # group | direct | order
+    name        = Column(String(200))                 # для group/order; для direct формируется на лету
+    order_id    = Column(Integer, nullable=True)       # для kind='order'
+    created_by  = Column(Integer)
+    is_archived = Column(Boolean, default=False)
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ChatChannelMember(Base):
+    """Участник канала + его прочитанность (last_read_message_id для непрочитанных)."""
+    __tablename__ = "chat_channel_members"
+
+    id                   = Column(Integer, primary_key=True)
+    channel_id           = Column(Integer, ForeignKey("chat_channels.id", ondelete="CASCADE"), nullable=False)
+    user_id              = Column(Integer, nullable=False)
+    user_name            = Column(String(200))
+    last_read_message_id = Column(Integer, default=0)
+    is_muted             = Column(Boolean, default=False)
+    joined_at            = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("channel_id", "user_id", name="uq_channel_user"),
+    )
+
+
+class ChatMessage(Base):
+    """Сообщение в канале чата."""
+    __tablename__ = "chat_messages"
+
+    id         = Column(Integer, primary_key=True)
+    channel_id = Column(Integer, ForeignKey("chat_channels.id", ondelete="CASCADE"), nullable=False)
+    user_id    = Column(Integer, nullable=False)
+    user_name  = Column(String(200))
+    text       = Column(Text, nullable=False)
+    reply_to   = Column(Integer, nullable=True)        # id сообщения, на которое отвечают
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    edited_at  = Column(DateTime, nullable=True)
 
 
 class StageRouteTemplate(Base):

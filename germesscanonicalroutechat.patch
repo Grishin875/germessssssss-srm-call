@@ -1,0 +1,1954 @@
+From 0e88dc7a7fe0f30f345a49c03a4c329daa1715bf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 18 Jun 2026 23:05:54 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=9A=D0=B0=D0=BD=D0=BE=D0=BD=D0=B8=D1=87?=
+ =?UTF-8?q?=D0=B5=D1=81=D0=BA=D0=B8=D0=B9=20=D0=BC=D0=B0=D1=80=D1=88=D1=80?=
+ =?UTF-8?q?=D1=83=D1=82=20=D0=B7=D0=B0=D0=BA=D0=B0=D0=B7=D0=B0=20=D0=BF?=
+ =?UTF-8?q?=D0=BE=20=D0=A2=D0=97=20(12=20=D1=8D=D1=82=D0=B0=D0=BF=D0=BE?=
+ =?UTF-8?q?=D0=B2)=20+=20=D1=87=D0=B0=D1=82?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Маршрут заказа (по ТЗ):
+- Генератор канонического маршрута по признакам изделия
+  (needs_smd / is_receiver / needs_assembly): распределение → склад СМД →
+  монтаж → AOI → гравировка → [приёмник: прошивка | РЭА: склад→выдача→
+  сборка→ОТК] → склад готовой продукции → сборка заказа → отгрузка.
+- Гейты контроля качества AOI и ОТК (эндпоинт /stages/{id}/inspect):
+  брак возвращает на этап-источник (AOI→СМД-монтаж, ОТК→сборка РЭА),
+  гейт блокируется до повторной сдачи; на ОТК — флаг «нужны компоненты»
+  переводит заказ в «Ожидает компонентов».
+- Признаки маршрута на изделии (product_catalog) + переопределение в заказе;
+  включение маршрута при создании заказа и кнопка генерации для существующих.
+- Приёмка готовой продукции на этапе склада готовой продукции (finished_goods).
+- Новые типы этапов в admin-сидинге и конфиге фронта.
+
+Чат:
+- Каналы (групповые / личные / по заказу), сообщения, непрочитанные,
+  @упоминания и уведомления; доставка через polling.
+- Эндпоинты /api/chat/* в business-logic + маршрут в api-gateway.
+- Страница /chat, пункт меню с бейджем непрочитанных, кнопка «Чат заказа».
+
+Проверено: импорт сервиса, сборка Next.js, 23 интеграционных теста на Postgres.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DmR7d9uknHFq8epv7Dafhs
+---
+ frontend/app/catalog/page.tsx                 |  28 +-
+ frontend/app/chat/page.tsx                    | 323 ++++++++++++++
+ frontend/app/orders/[id]/page.tsx             |  98 ++++-
+ frontend/app/orders/page.tsx                  |  51 ++-
+ frontend/components/layout/Sidebar.tsx        |  29 ++
+ frontend/hooks/useStageTypes.ts               |  11 +
+ frontend/lib/api.ts                           |  79 ++++
+ microservices/admin-microservice/app/main.py  |  11 +
+ .../api-gateway/app/services/proxy.py         |   1 +
+ .../app/api/v1/endpoints/chat.py              | 408 ++++++++++++++++++
+ .../app/api/v1/endpoints/orders.py            | 285 +++++++++++-
+ .../business-logic-microservice/app/main.py   |   6 +-
+ .../app/models/business.py                    |  48 +++
+ .../app/services/canonical_route.py           | 102 +++++
+ .../app/api/v1/endpoints/products.py          |   6 +-
+ .../products-microservice/app/main.py         |   4 +
+ .../app/models/products.py                    |   4 +
+ 17 files changed, 1480 insertions(+), 14 deletions(-)
+ create mode 100644 frontend/app/chat/page.tsx
+ create mode 100644 microservices/business-logic-microservice/app/api/v1/endpoints/chat.py
+ create mode 100644 microservices/business-logic-microservice/app/services/canonical_route.py
+
+diff --git a/frontend/app/catalog/page.tsx b/frontend/app/catalog/page.tsx
+index 83d84b4..4206727 100644
+--- a/frontend/app/catalog/page.tsx
++++ b/frontend/app/catalog/page.tsx
+@@ -25,7 +25,7 @@ export default function CatalogPage() {
+ 
+   const [showModal, setShowModal] = useState(false);
+   const [editItem, setEditItem] = useState<ProductCatalogItem | null>(null);
+-  const [form, setForm] = useState({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true });
++  const [form, setForm] = useState({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true, needs_smd: true, is_receiver: false, needs_assembly: true });
+   const [saving, setSaving] = useState(false);
+   const [error, setError] = useState("");
+ 
+@@ -45,14 +45,14 @@ export default function CatalogPage() {
+ 
+   function openCreate() {
+     setEditItem(null);
+-    setForm({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true });
++    setForm({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true, needs_smd: true, is_receiver: false, needs_assembly: true });
+     setError("");
+     setShowModal(true);
+   }
+ 
+   function openEdit(item: ProductCatalogItem) {
+     setEditItem(item);
+-    setForm({ name: item.name, sku: item.sku || "", category: item.category || "", description: item.description || "", unit: item.unit || "шт", is_active: item.is_active });
++    setForm({ name: item.name, sku: item.sku || "", category: item.category || "", description: item.description || "", unit: item.unit || "шт", is_active: item.is_active, needs_smd: item.needs_smd !== false, is_receiver: item.is_receiver === true, needs_assembly: item.needs_assembly !== false });
+     setError("");
+     setShowModal(true);
+   }
+@@ -61,7 +61,7 @@ export default function CatalogPage() {
+     if (!form.name.trim()) { setError("Название обязательно"); return; }
+     setSaving(true); setError("");
+     try {
+-      const data = { name: form.name.trim(), sku: form.sku || undefined, category: form.category || undefined, description: form.description || undefined, unit: form.unit, is_active: form.is_active };
++      const data = { name: form.name.trim(), sku: form.sku || undefined, category: form.category || undefined, description: form.description || undefined, unit: form.unit, is_active: form.is_active, needs_smd: form.needs_smd, is_receiver: form.is_receiver, needs_assembly: form.needs_assembly };
+       if (editItem) {
+         await api.updateCatalogItem(editItem.id, data);
+       } else {
+@@ -233,6 +233,26 @@ export default function CatalogPage() {
+               Активен (отображается при создании заказов)
+             </label>
+           </div>
++          {/* Признаки канонического маршрута по ТЗ */}
++          <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
++            <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 8 }}>
++              Маршрут производства (по ТЗ)
++            </div>
++            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
++              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400 }}>
++                <input type="checkbox" checked={form.needs_smd} onChange={e => setForm(f => ({ ...f, needs_smd: e.target.checked }))} style={{ width: 15, height: 15 }} />
++                Блок СМД (склад СМД → монтаж → AOI → гравировка)
++              </label>
++              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400 }}>
++                <input type="checkbox" checked={form.is_receiver} onChange={e => setForm(f => ({ ...f, is_receiver: e.target.checked }))} style={{ width: 15, height: 15 }} />
++                Приёмник (после СМД — прошивка, без сборки РЭА)
++              </label>
++              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400, opacity: form.is_receiver ? 0.5 : 1 }}>
++                <input type="checkbox" checked={form.needs_assembly} disabled={form.is_receiver} onChange={e => setForm(f => ({ ...f, needs_assembly: e.target.checked }))} style={{ width: 15, height: 15 }} />
++                Сборка РЭА (склад РЭА → выдача → сборка → ОТК)
++              </label>
++            </div>
++          </div>
+         </div>
+       </Modal>
+     </AppLayout>
+diff --git a/frontend/app/chat/page.tsx b/frontend/app/chat/page.tsx
+new file mode 100644
+index 0000000..7e7e72d
+--- /dev/null
++++ b/frontend/app/chat/page.tsx
+@@ -0,0 +1,323 @@
++"use client";
++import { useCallback, useEffect, useRef, useState } from "react";
++import { useRouter } from "next/navigation";
++import { useAuth } from "../../lib/auth";
++import { AppLayout } from "../../components/layout/AppLayout";
++import { Button } from "../../components/ui/Button";
++import { Modal } from "../../components/ui/Modal";
++import { toast } from "../../components/ui/Toast";
++import { useAutoRefresh } from "../../lib/useAutoRefresh";
++import { api, ChatChannel, ChatMessage, User } from "../../lib/api";
++
++function initials(name?: string) {
++  return (name || "?").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
++}
++function fmtTime(iso?: string | null) {
++  if (!iso) return "";
++  const d = new Date(iso);
++  return d.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
++}
++function fmtDay(iso?: string | null) {
++  if (!iso) return "";
++  return new Date(iso).toLocaleDateString("ru", { day: "numeric", month: "long" });
++}
++const KIND_ICON: Record<string, string> = { group: "#", direct: "@", order: "№" };
++
++export default function ChatPage() {
++  const { user, loading } = useAuth();
++  const router = useRouter();
++
++  const [channels, setChannels] = useState<ChatChannel[]>([]);
++  const [activeId, setActiveId] = useState<number | null>(null);
++  const [messages, setMessages] = useState<ChatMessage[]>([]);
++  const [text, setText] = useState("");
++  const [sending, setSending] = useState(false);
++  const [users, setUsers] = useState<User[]>([]);
++
++  const [groupModal, setGroupModal] = useState(false);
++  const [groupName, setGroupName] = useState("");
++  const [groupMembers, setGroupMembers] = useState<Set<number>>(new Set());
++  const [dmModal, setDmModal] = useState(false);
++
++  const lastIdRef = useRef(0);
++  const bottomRef = useRef<HTMLDivElement>(null);
++  const scrollRef = useRef<HTMLDivElement>(null);
++
++  useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
++
++  const loadChannels = useCallback(async () => {
++    try {
++      const list = await api.getChatChannels();
++      setChannels(list);
++      setActiveId(prev => prev ?? (list[0]?.id ?? null));
++    } catch (e) { console.error(e); }
++  }, []);
++
++  useEffect(() => {
++    if (!user) return;
++    loadChannels();
++    api.getUsers().then(u => setUsers(u.filter(x => x.is_active !== false && x.id !== user.id))).catch(() => {});
++    // Открыть канал заказа / конкретный канал из query (?order=ID или ?channel=ID)
++    const sp = new URLSearchParams(window.location.search);
++    const orderId = sp.get("order");
++    const channelId = sp.get("channel");
++    if (orderId) {
++      api.openOrderChat(Number(orderId)).then(ch => { setActiveId(ch.id); loadChannels(); }).catch(() => {});
++    } else if (channelId) {
++      setActiveId(Number(channelId));
++    }
++  }, [user, loadChannels]);
++
++  // Опрос списка каналов (непрочитанные)
++  useAutoRefresh(() => { loadChannels(); }, 10000, !!user && !groupModal && !dmModal);
++
++  const active = channels.find(c => c.id === activeId) || null;
++
++  // Загрузка сообщений выбранного канала + пометка прочитанным
++  const loadMessages = useCallback(async (channelId: number, initial: boolean) => {
++    try {
++      if (initial) {
++        const msgs = await api.getChatMessages(channelId, { limit: 80 });
++        setMessages(msgs);
++        lastIdRef.current = msgs.length ? msgs[msgs.length - 1].id : 0;
++      } else {
++        const fresh = await api.getChatMessages(channelId, { after_id: lastIdRef.current, limit: 100 });
++        if (fresh.length) {
++          setMessages(prev => [...prev, ...fresh]);
++          lastIdRef.current = fresh[fresh.length - 1].id;
++        }
++      }
++      if (lastIdRef.current) {
++        await api.markChatRead(channelId, lastIdRef.current).catch(() => {});
++      }
++    } catch (e) { console.error(e); }
++  }, []);
++
++  useEffect(() => {
++    if (!activeId) { setMessages([]); return; }
++    lastIdRef.current = 0;
++    loadMessages(activeId, true);
++  }, [activeId, loadMessages]);
++
++  // Опрос новых сообщений активного канала
++  useEffect(() => {
++    if (!activeId) return;
++    const t = setInterval(() => loadMessages(activeId, false), 3500);
++    return () => clearInterval(t);
++  }, [activeId, loadMessages]);
++
++  // Автоскролл вниз при новых сообщениях
++  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
++
++  async function send() {
++    const t = text.trim();
++    if (!t || !activeId) return;
++    setSending(true);
++    try {
++      const msg = await api.sendChatMessage(activeId, t);
++      setMessages(prev => [...prev, msg]);
++      lastIdRef.current = msg.id;
++      setText("");
++      loadChannels();
++    } catch (e) { toast.error(e instanceof Error ? e.message : "Не удалось отправить"); }
++    setSending(false);
++  }
++
++  async function createGroup() {
++    const name = groupName.trim();
++    if (!name) { toast.warning("Укажите название"); return; }
++    try {
++      const ch = await api.createChatChannel(name, Array.from(groupMembers));
++      setGroupModal(false); setGroupName(""); setGroupMembers(new Set());
++      await loadChannels();
++      setActiveId(ch.id);
++    } catch (e) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++  }
++
++  async function startDm(uid: number) {
++    try {
++      const ch = await api.openDirectChat(uid);
++      setDmModal(false);
++      await loadChannels();
++      setActiveId(ch.id);
++    } catch (e) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++  }
++
++  async function removeMessage(id: number) {
++    if (!confirm("Удалить сообщение?")) return;
++    try {
++      await api.deleteChatMessage(id);
++      setMessages(prev => prev.map(m => m.id === id ? { ...m, is_deleted: true, text: "" } : m));
++    } catch (e) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++  }
++
++  if (loading || !user) return null;
++
++  return (
++    <AppLayout>
++      <div style={{ display: "flex", gap: 14, height: "calc(100vh - 120px)", minHeight: 480 }}>
++        {/* ── Список каналов ─────────────────────────────────────────── */}
++        <div className="glass" style={{ width: 290, flexShrink: 0, borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
++          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
++            <div style={{ fontWeight: 700, fontSize: 15 }}>Чат</div>
++            <div style={{ display: "flex", gap: 6 }}>
++              <Button size="sm" variant="secondary" onClick={() => setDmModal(true)} title="Личная переписка">@</Button>
++              <Button size="sm" onClick={() => setGroupModal(true)} title="Новый канал">+</Button>
++            </div>
++          </div>
++          <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
++            {channels.length === 0 && (
++              <div style={{ color: "var(--text-secondary)", fontSize: 13, padding: 16, textAlign: "center" }}>Нет каналов</div>
++            )}
++            {channels.map(ch => {
++              const isActive = ch.id === activeId;
++              return (
++                <button
++                  key={ch.id}
++                  onClick={() => setActiveId(ch.id)}
++                  style={{
++                    width: "100%", textAlign: "left", border: "none", cursor: "pointer",
++                    padding: "10px 12px", borderRadius: 11, marginBottom: 3,
++                    background: isActive ? "linear-gradient(135deg, rgba(99,102,241,0.16), rgba(139,92,246,0.10))" : "transparent",
++                    display: "flex", gap: 10, alignItems: "center",
++                  }}
++                >
++                  <div style={{
++                    width: 36, height: 36, borderRadius: 10, flexShrink: 0, color: "#fff", fontWeight: 700, fontSize: 13,
++                    display: "flex", alignItems: "center", justifyContent: "center",
++                    background: ch.kind === "order" ? "linear-gradient(135deg,#f59e0b,#f97316)" : ch.kind === "direct" ? "linear-gradient(135deg,#0ea5e9,#6366f1)" : "linear-gradient(135deg,#6366f1,#a78bfa)",
++                  }}>{ch.kind === "direct" ? initials(ch.name) : KIND_ICON[ch.kind]}</div>
++                  <div style={{ flex: 1, minWidth: 0 }}>
++                    <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
++                      <span style={{ fontWeight: isActive ? 700 : 500, fontSize: 13.5, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.name || "Без названия"}</span>
++                      <span style={{ fontSize: 10.5, color: "var(--text-secondary)", flexShrink: 0 }}>{fmtTime(ch.last_message_at)}</span>
++                    </div>
++                    <div style={{ fontSize: 12, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
++                      {ch.last_message ? `${ch.last_message_author ? ch.last_message_author.split(" ")[0] + ": " : ""}${ch.last_message}` : "Нет сообщений"}
++                    </div>
++                  </div>
++                  {ch.unread > 0 && (
++                    <span style={{ flexShrink: 0, minWidth: 19, height: 19, padding: "0 5px", borderRadius: 10, background: "linear-gradient(135deg,#6366f1,#818cf8)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{ch.unread}</span>
++                  )}
++                </button>
++              );
++            })}
++          </div>
++        </div>
++
++        {/* ── Лента сообщений ────────────────────────────────────────── */}
++        <div className="glass" style={{ flex: 1, borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
++          {!active ? (
++            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)" }}>Выберите канал</div>
++          ) : (
++            <>
++              <div style={{ padding: "13px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
++                <div>
++                  <div style={{ fontWeight: 700, fontSize: 15 }}>{active.name}</div>
++                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
++                    {active.kind === "order" && active.order_id ? <button onClick={() => router.push(`/orders/${active.order_id}`)} style={{ background: "none", border: "none", color: "var(--accent, #6366f1)", cursor: "pointer", padding: 0, fontSize: 12 }}>→ к заказу №{active.order_id}</button> : `${active.member_count} участн.`}
++                  </div>
++                </div>
++              </div>
++
++              <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 2 }}>
++                {messages.map((m, i) => {
++                  const own = m.user_id === user.id;
++                  const prev = messages[i - 1];
++                  const showDay = !prev || fmtDay(prev.created_at) !== fmtDay(m.created_at);
++                  const grouped = prev && prev.user_id === m.user_id && !showDay;
++                  return (
++                    <div key={m.id}>
++                      {showDay && (
++                        <div style={{ textAlign: "center", margin: "12px 0 8px", fontSize: 11, color: "var(--text-secondary)" }}>{fmtDay(m.created_at)}</div>
++                      )}
++                      <div style={{ display: "flex", flexDirection: own ? "row-reverse" : "row", gap: 9, marginTop: grouped ? 1 : 8, alignItems: "flex-end" }}>
++                        <div style={{ width: 30, flexShrink: 0 }}>
++                          {!grouped && (
++                            <div style={{ width: 30, height: 30, borderRadius: "50%", background: "linear-gradient(135deg,#6366f1,#a78bfa)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(m.user_name)}</div>
++                          )}
++                        </div>
++                        <div style={{ maxWidth: "70%", display: "flex", flexDirection: "column", alignItems: own ? "flex-end" : "flex-start" }}>
++                          {!grouped && !own && <div style={{ fontSize: 11.5, color: "var(--text-secondary)", marginBottom: 2, paddingLeft: 2 }}>{m.user_name}</div>}
++                          <div
++                            onDoubleClick={() => (own || user.role === "admin" || user.role === "manager") && !m.is_deleted && removeMessage(m.id)}
++                            title={fmtTime(m.created_at)}
++                            style={{
++                              padding: "7px 11px", borderRadius: 13, fontSize: 13.5, lineHeight: 1.4, wordBreak: "break-word", whiteSpace: "pre-wrap",
++                              background: m.is_deleted ? "transparent" : own ? "linear-gradient(135deg,#6366f1,#7c6cf0)" : "var(--bg-secondary)",
++                              color: m.is_deleted ? "var(--text-secondary)" : own ? "#fff" : "var(--text)",
++                              fontStyle: m.is_deleted ? "italic" : "normal",
++                              border: m.is_deleted ? "1px dashed var(--border)" : "none",
++                            }}
++                          >
++                            {m.is_deleted ? "сообщение удалено" : m.text}
++                          </div>
++                          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 1, padding: "0 2px" }}>{fmtTime(m.created_at)}</div>
++                        </div>
++                      </div>
++                    </div>
++                  );
++                })}
++                {messages.length === 0 && (
++                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 13 }}>Сообщений пока нет — начните беседу</div>
++                )}
++                <div ref={bottomRef} />
++              </div>
++
++              <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
++                <textarea
++                  value={text}
++                  onChange={e => setText(e.target.value)}
++                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
++                  placeholder="Сообщение…  (Enter — отправить, Shift+Enter — перенос)"
++                  rows={1}
++                  style={{ flex: 1, resize: "none", maxHeight: 120, padding: "9px 12px", borderRadius: 11, border: "1.5px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text)", fontSize: 13.5, fontFamily: "inherit" }}
++                />
++                <Button onClick={send} loading={sending} disabled={!text.trim()}>Отпр.</Button>
++              </div>
++            </>
++          )}
++        </div>
++      </div>
++
++      {/* ── Модалка: новый групповой канал ─────────────────────────── */}
++      <Modal open={groupModal} onClose={() => setGroupModal(false)} title="Новый канал">
++        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
++          <div>
++            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>Название канала</label>
++            <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder="напр. Производство" style={{ width: "100%", marginTop: 4, padding: "9px 12px", borderRadius: 10, border: "1.5px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text)" }} />
++          </div>
++          <div>
++            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>Участники</label>
++            <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 6, border: "1px solid var(--border)", borderRadius: 10, padding: 6 }}>
++              {users.map(u => (
++                <label key={u.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 8px", borderRadius: 8, cursor: "pointer" }}>
++                  <input type="checkbox" checked={groupMembers.has(u.id)} onChange={e => {
++                    setGroupMembers(prev => { const n = new Set(prev); if (e.target.checked) n.add(u.id); else n.delete(u.id); return n; });
++                  }} />
++                  <span style={{ fontSize: 13 }}>{u.full_name || u.username}</span>
++                </label>
++              ))}
++            </div>
++          </div>
++          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
++            <Button variant="secondary" onClick={() => setGroupModal(false)}>Отмена</Button>
++            <Button onClick={createGroup}>Создать</Button>
++          </div>
++        </div>
++      </Modal>
++
++      {/* ── Модалка: личная переписка ──────────────────────────────── */}
++      <Modal open={dmModal} onClose={() => setDmModal(false)} title="Личная переписка">
++        <div style={{ maxHeight: 320, overflowY: "auto" }}>
++          {users.map(u => (
++            <button key={u.id} onClick={() => startDm(u.id)} style={{ width: "100%", textAlign: "left", border: "none", background: "transparent", cursor: "pointer", padding: "9px 10px", borderRadius: 9, display: "flex", alignItems: "center", gap: 10 }}>
++              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#0ea5e9,#6366f1)", color: "#fff", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(u.full_name || u.username)}</div>
++              <span style={{ fontSize: 13.5 }}>{u.full_name || u.username}</span>
++            </button>
++          ))}
++        </div>
++      </Modal>
++    </AppLayout>
++  );
++}
+diff --git a/frontend/app/orders/[id]/page.tsx b/frontend/app/orders/[id]/page.tsx
+index 893cf95..74b40ad 100644
+--- a/frontend/app/orders/[id]/page.tsx
++++ b/frontend/app/orders/[id]/page.tsx
+@@ -105,6 +105,12 @@ export default function OrderDetailPage() {
+   const [routeLoading, setRouteLoading] = useState(false);
+   const [routeSaving, setRouteSaving] = useState(false);
+ 
++  // Гейты контроля качества (AOI / ОТК) канонического маршрута
++  const [gateModal, setGateModal] = useState<OrderStage | null>(null);
++  const [gateComment, setGateComment] = useState("");
++  const [gateNeedsComp, setGateNeedsComp] = useState(false);
++  const [gateSaving, setGateSaving] = useState(false);
++
+   useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
+ 
+   useEffect(() => {
+@@ -265,6 +271,37 @@ export default function OrderDetailPage() {
+     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+   }
+ 
++  // ── Гейты контроля качества (AOI / ОТК) ─────────────────────────────
++  const GATE_LABEL: Record<string, string> = { aoi: "AOI", otk: "ОТК" };
++  async function inspectPass(stage: OrderStage) {
++    if (!confirm(`Принять «${stage.stage_name || stage.stage_type}» как годный?`)) return;
++    try {
++      await api.inspectStage(id, stage.id, { result: "pass" });
++      await loadStages();
++      api.getOrder(id).then(setOrder).catch(() => {});
++      toast.success("Этап принят, маршрут продолжен");
++    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++  }
++  function openGateFail(stage: OrderStage) {
++    setGateModal(stage); setGateComment(""); setGateNeedsComp(false);
++  }
++  async function submitGateFail() {
++    if (!gateModal) return;
++    setGateSaving(true);
++    try {
++      await api.inspectStage(id, gateModal.id, {
++        result: "fail",
++        comment: gateComment.trim() || undefined,
++        needs_components: gateModal.stage_type === "otk" ? gateNeedsComp : undefined,
++      });
++      setGateModal(null);
++      await loadStages();
++      api.getOrder(id).then(setOrder).catch(() => {});
++      toast.warning("Брак: заказ возвращён на доработку");
++    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++    finally { setGateSaving(false); }
++  }
++
+   async function openRoute(stage: OrderStage) {
+     setRouteStage(stage);
+     setRouteExisting([]);
+@@ -406,6 +443,15 @@ export default function OrderDetailPage() {
+     try { setStages(await api.applyRouteTemplate(id, tid)); toast.success("Этапы добавлены"); await loadStages(); }
+     catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+   }
++  async function genCanonical() {
++    if (stages.length > 0 && !confirm("Заменить текущие этапы каноническим маршрутом по ТЗ (12 этапов)? Признаки изделия берутся из каталога.")) return;
++    try {
++      const r = await api.generateCanonicalStages(id, { replace: true });
++      await loadStages();
++      api.getOrder(id).then(setOrder).catch(() => {});
++      toast.success(`Маршрут по ТЗ построен: ${r.created} этап(ов)`);
++    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++  }
+   async function loadTemplates() {
+     try { setRouteTemplates(await api.getRouteTemplates()); } catch {}
+   }
+@@ -437,7 +483,8 @@ export default function OrderDetailPage() {
+               ОТК-возвраты: {order.otk_attempts}
+             </span>
+           )}
+-          <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => printRouteSheet({
++          <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => router.push(`/chat?order=${order.id}`)}>💬 Чат заказа</Button>
++          <Button variant="secondary" size="sm" onClick={() => printRouteSheet({
+             orderId: order.id,
+             productName: order.product_name,
+             plannedQty: order.planned_qty,
+@@ -601,6 +648,7 @@ export default function OrderDetailPage() {
+                 {stages.length > 0 && (
+                   <Button size="sm" variant="ghost" onClick={saveAsTemplate}>★ Сохранить как шаблон</Button>
+                 )}
++                <Button size="sm" variant="secondary" onClick={genCanonical} title="Построить канонический маршрут по ТЗ (12 этапов)">⚙ Маршрут по ТЗ</Button>
+                 <Button size="sm" onClick={() => {
+                   setEditStageModal(null);
+                   setStageForm({ stage_name: "", stage_type: "assembly", required_role: "", sort_order: String(stages.length), instructions: "", next_stage_id: "", est_minutes: "", result_photo: "", checklist: "" });
+@@ -619,9 +667,12 @@ export default function OrderDetailPage() {
+                 <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
+                   <div style={{ marginBottom: 16 }}>Этапы ещё не созданы</div>
+                   {hasPermission("orders.start") && (
+-                    <Button size="sm" onClick={async () => {
+-                      try { setStages(await api.generateOrderStages(id)); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+-                    }}>Сгенерировать этапы</Button>
++                    <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
++                      <Button size="sm" onClick={async () => {
++                        try { setStages(await api.generateOrderStages(id)); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
++                      }}>Сгенерировать из рецептуры</Button>
++                      <Button size="sm" variant="secondary" onClick={genCanonical}>⚙ Маршрут по ТЗ</Button>
++                    </div>
+                   )}
+                 </div>
+               </Card>
+@@ -772,6 +823,19 @@ export default function OrderDetailPage() {
+                           </div>
+                         )}
+                         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
++                          {/* Гейт контроля качества (AOI / ОТК): принять или вернуть брак */}
++                          {(stage.stage_type === "aoi" || stage.stage_type === "otk")
++                            && (stage.status === "pending" || stage.status === "in_progress")
++                            && (hasPermission("otk.view") || user?.role === "admin" || user?.role === "manager" || user?.role === "operator_otk" || isMyStage) && (
++                            <>
++                              <Button size="sm" variant="success" onClick={() => inspectPass(stage)}>
++                                ✓ {GATE_LABEL[stage.stage_type] ?? "Контроль"}: годен
++                              </Button>
++                              <Button size="sm" variant="danger" onClick={() => openGateFail(stage)}>
++                                ✗ Брак
++                              </Button>
++                            </>
++                          )}
+                           {/* + Добавить исполнителя */}
+                           {isActive && hasPermission("orders.edit") && (
+                             <Button size="sm" variant="secondary" onClick={() => openAddAssignee(stage)}>
+@@ -1112,6 +1176,32 @@ export default function OrderDetailPage() {
+         </div>
+       </Modal>
+ 
++      {/* Гейт: возврат брака на доработку */}
++      <Modal
++        open={gateModal !== null}
++        onClose={() => setGateModal(null)}
++        title={`Брак на «${gateModal?.stage_name || (gateModal && GATE_LABEL[gateModal.stage_type]) || ""}»`}
++        footer={<><Button variant="secondary" onClick={() => setGateModal(null)}>Отмена</Button><Button variant="danger" loading={gateSaving} onClick={submitGateFail}>Вернуть на доработку</Button></>}
++      >
++        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
++          <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
++            {gateModal?.stage_type === "otk"
++              ? "Заказ вернётся в «Сборку РЭА». Опишите причину брака."
++              : "Изделие вернётся на «СМД-монтаж» для переделки, затем снова на AOI."}
++          </div>
++          <div>
++            <label>Причина / описание брака</label>
++            <textarea value={gateComment} onChange={e => setGateComment(e.target.value)} rows={3} placeholder="Напр.: непропай, смещение компонента, неверная полярность..." />
++          </div>
++          {gateModal?.stage_type === "otk" && (
++            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
++              <input type="checkbox" checked={gateNeedsComp} onChange={e => setGateNeedsComp(e.target.checked)} />
++              Нужны дополнительные компоненты (заказ → «Ожидает компонентов»)
++            </label>
++          )}
++        </div>
++      </Modal>
++
+       {/* Start modal */}
+       <Modal
+         open={showStartModal}
+diff --git a/frontend/app/orders/page.tsx b/frontend/app/orders/page.tsx
+index 55a0440..1434f53 100644
+--- a/frontend/app/orders/page.tsx
++++ b/frontend/app/orders/page.tsx
+@@ -124,6 +124,9 @@ export default function OrdersPage() {
+   const [error, setError] = useState("");
+ 
+   const [extraStages, setExtraStages] = useState<StageRow[]>([]);
++  // Канонический маршрут по ТЗ (12 этапов)
++  const [useCanonical, setUseCanonical] = useState(false);
++  const [canonFlags, setCanonFlags] = useState({ needs_smd: true, is_receiver: false, needs_assembly: true });
+ 
+   // Excel импорт
+   const importInputRef = useRef<HTMLInputElement>(null);
+@@ -189,6 +192,15 @@ export default function OrdersPage() {
+       setProductStages([]); setStageAssignments({}); setProductRole(null); setSkippedStages(new Set()); return;
+     }
+     setLoadingStages(true);
++    // Префилл признаков канонического маршрута из каталога изделия
++    api.getCatalog({ q: form.product_name }).then(items => {
++      const it = items.find(i => i.name === form.product_name);
++      if (it) setCanonFlags({
++        needs_smd: it.needs_smd !== false,
++        is_receiver: it.is_receiver === true,
++        needs_assembly: it.needs_assembly !== false,
++      });
++    }).catch(() => {});
+     api.getProductStages(form.product_name)
+       .then((data: unknown) => {
+         if (Array.isArray(data)) {
+@@ -237,6 +249,12 @@ export default function OrdersPage() {
+       if (!payload.assigned_operator_id) delete payload.assigned_operator_id;
+       if (!payload.stage_assignments) delete payload.stage_assignments;
+       if (!payload.skipped_stage_ids) delete payload.skipped_stage_ids;
++      if (useCanonical) {
++        payload.use_canonical_route = true;
++        payload.needs_smd = canonFlags.needs_smd;
++        payload.is_receiver = canonFlags.is_receiver;
++        payload.needs_assembly = canonFlags.needs_assembly;
++      }
+       if (extraStages.length > 0) {
+         (payload as Record<string, unknown>).extra_stages = extraStages.map(s => ({
+           stage_type: s.stage_type,
+@@ -252,6 +270,7 @@ export default function OrdersPage() {
+       setShowCreate(false);
+       setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
+       setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
++      setUseCanonical(false); setCanonFlags({ needs_smd: true, is_receiver: false, needs_assembly: true });
+       load();
+     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
+     setSaving(false);
+@@ -874,8 +893,38 @@ export default function OrdersPage() {
+             <textarea value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} rows={2} />
+           </div>
+ 
++          {/* Канонический маршрут по ТЗ (12 этапов) */}
++          <div style={{ padding: "12px 14px", borderRadius: 10, background: useCanonical ? "#6366f110" : "var(--bg-secondary)", border: `1px solid ${useCanonical ? "#6366f155" : "var(--border)"}` }}>
++            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
++              <input type="checkbox" checked={useCanonical} onChange={e => setUseCanonical(e.target.checked)} />
++              <span style={{ fontWeight: 600, fontSize: 13.5 }}>Маршрут по ТЗ (12 этапов)</span>
++              <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>распределение → СМД → AOI → … → отгрузка</span>
++            </label>
++            {useCanonical && (
++              <div style={{ marginTop: 10 }}>
++                <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
++                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
++                    <input type="checkbox" checked={canonFlags.needs_smd} onChange={e => setCanonFlags(f => ({ ...f, needs_smd: e.target.checked }))} />
++                    Блок СМД (монтаж + AOI + гравировка)
++                  </label>
++                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
++                    <input type="checkbox" checked={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, is_receiver: e.target.checked }))} />
++                    Приёмник (после СМД — прошивка)
++                  </label>
++                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", opacity: canonFlags.is_receiver ? 0.5 : 1 }}>
++                    <input type="checkbox" checked={canonFlags.needs_assembly} disabled={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, needs_assembly: e.target.checked }))} />
++                    Сборка РЭА (склад РЭА → выдача → сборка → ОТК)
++                  </label>
++                </div>
++                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
++                  Этапы построятся автоматически по признакам изделия. Гейты AOI и ОТК возвращают брак на предыдущий этап.
++                </div>
++              </div>
++            )}
++          </div>
++
+           {/* Этапы маршрута и назначение исполнителя */}
+-          {form.product_name && productNames.includes(form.product_name) && (
++          {!useCanonical && form.product_name && productNames.includes(form.product_name) && (
+             <div>
+               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+                 <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>
+diff --git a/frontend/components/layout/Sidebar.tsx b/frontend/components/layout/Sidebar.tsx
+index 8380ccb..03d430d 100644
+--- a/frontend/components/layout/Sidebar.tsx
++++ b/frontend/components/layout/Sidebar.tsx
+@@ -51,6 +51,11 @@ const NAV: NavItem[] = [
+     label: "Мои заказы",
+     icon: <Icon d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />,
+   },
++  {
++    href: "/chat",
++    label: "Чат",
++    icon: <Icon d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.6 7.6 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />,
++  },
+   // ── Склад ────────────────────────────────────────────────────────────────
+   {
+     href: "/warehouse",
+@@ -197,6 +202,8 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
+   const { isDark, setMode } = useTheme();
+ 
+   const visible = NAV.filter((item) => {
++    // Чат доступен всем авторизованным независимо от роли
++    if (item.href === "/chat") return true;
+     if (item.role && user?.role !== item.role) return false;
+     // Производственные роли видят Главную, Мои заказы и страницу своего отдела
+     if (isProductionRole) {
+@@ -221,6 +228,7 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
+     .toUpperCase();
+ 
+   const [taskCount, setTaskCount] = useState(0);
++  const [chatUnread, setChatUnread] = useState(0);
+ 
+   useEffect(() => {
+     if (!user || !(PRODUCTION_ROLES as readonly string[]).includes(user.role)) return;
+@@ -234,6 +242,17 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
+     });
+   }, [user]);
+ 
++  useEffect(() => {
++    if (!user) return;
++    let alive = true;
++    const tick = () => import("../../lib/api").then(({ api }) =>
++      api.getChatUnread().then(r => { if (alive) setChatUnread(r.unread); }).catch(() => {})
++    );
++    tick();
++    const t = setInterval(tick, 20000);
++    return () => { alive = false; clearInterval(t); };
++  }, [user]);
++
+   return (
+     <aside
+       className={"sidebar" + (mobileOpen ? " sidebar-open" : "")}
+@@ -365,6 +384,16 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
+                   boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
+                 }}>{taskCount}</span>
+               )}
++              {item.href === "/chat" && chatUnread > 0 && (
++                <span className="glow-pulse" style={{
++                  marginLeft: "auto",
++                  minWidth: 19, height: 19,
++                  display: "flex", alignItems: "center", justifyContent: "center",
++                  borderRadius: 10, background: active ? "rgba(255,255,255,0.25)" : "linear-gradient(135deg, #6366f1, #818cf8)",
++                  color: "#fff", fontSize: 10, fontWeight: 700, padding: "0 5px",
++                  boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
++                }}>{chatUnread > 99 ? "99+" : chatUnread}</span>
++              )}
+             </Link>
+             </React.Fragment>
+           );
+diff --git a/frontend/hooks/useStageTypes.ts b/frontend/hooks/useStageTypes.ts
+index 1264f44..a041d7d 100644
+--- a/frontend/hooks/useStageTypes.ts
++++ b/frontend/hooks/useStageTypes.ts
+@@ -11,6 +11,17 @@ const DEFAULT_STAGE_TYPES: StageTypeItem[] = [
+   { id: 0, code: "engraving", label: "Гравировка",  color: "#f59e0b", sort_order: 3, is_active: true },
+   { id: 0, code: "case",      label: "Корпус",      color: "#f97316", sort_order: 4, is_active: true },
+   { id: 0, code: "warehouse", label: "Склад",       color: "#6b7280", sort_order: 5, is_active: true },
++  // Канонический маршрут по ТЗ
++  { id: 0, code: "distribution",   label: "Распределение заказа",    color: "#64748b", sort_order: 6,  is_active: true },
++  { id: 0, code: "warehouse_smd",  label: "Склад СМД",               color: "#6b7280", sort_order: 7,  is_active: true },
++  { id: 0, code: "aoi",            label: "AOI — контроль",          color: "#ec4899", sort_order: 8,  is_active: true },
++  { id: 0, code: "firmware",       label: "Прошивка",                color: "#14b8a6", sort_order: 9,  is_active: true },
++  { id: 0, code: "warehouse_rea",  label: "Склад РЭА",               color: "#6b7280", sort_order: 10, is_active: true },
++  { id: 0, code: "issue_rea",      label: "Выдача со склада РЭА",     color: "#6b7280", sort_order: 11, is_active: true },
++  { id: 0, code: "otk",            label: "ОТК",                     color: "#22c55e", sort_order: 12, is_active: true },
++  { id: 0, code: "warehouse_fg",   label: "Склад готовой продукции", color: "#6b7280", sort_order: 13, is_active: true },
++  { id: 0, code: "order_assembly", label: "Сборка всего заказа",     color: "#0ea5e9", sort_order: 14, is_active: true },
++  { id: 0, code: "shipment",       label: "Отгрузка",                color: "#3b82f6", sort_order: 15, is_active: true },
+ ];
+ 
+ export function useStageTypes() {
+diff --git a/frontend/lib/api.ts b/frontend/lib/api.ts
+index 5919552..e5a8b71 100644
+--- a/frontend/lib/api.ts
++++ b/frontend/lib/api.ts
+@@ -205,6 +205,18 @@ export const api = {
+   async generateOrderStages(orderId: number) {
+     return request<OrderStage[]>(`/api/orders/${orderId}/stages/generate`, { method: "POST" });
+   },
++  // Канонический маршрут по ТЗ (12 этапов)
++  async generateCanonicalStages(orderId: number, data?: { needs_smd?: boolean; is_receiver?: boolean; needs_assembly?: boolean; replace?: boolean }) {
++    return request<{ created: number; flags: { needs_smd: boolean; is_receiver: boolean; needs_assembly: boolean }; stages: OrderStage[] }>(
++      `/api/orders/${orderId}/stages/generate-canonical`, { method: "POST", body: JSON.stringify(data || {}) }
++    );
++  },
++  // Контроль качества на этапе-гейте (AOI / ОТК)
++  async inspectStage(orderId: number, stageId: number, data: { result: "pass" | "fail"; comment?: string; photo_url?: string; needs_components?: boolean; rework_stage_id?: number }) {
++    return request<{ result: string; stage_id: number; rework_stage_id: number | null; order_status?: string }>(
++      `/api/orders/${orderId}/stages/${stageId}/inspect`, { method: "POST", body: JSON.stringify(data) }
++    );
++  },
+   async addOrderStage(orderId: number, data: { stage_name: string; stage_type: string; required_role?: string; sort_order?: number; instructions?: string; next_stage_id?: number }) {
+     return request<OrderStage>(`/api/orders/${orderId}/stages`, { method: "POST", body: JSON.stringify(data) });
+   },
+@@ -723,6 +735,43 @@ export const api = {
+   async getCatalogCategories() {
+     return request<string[]>("/api/catalog/categories");
+   },
++
++  // ── Чат ───────────────────────────────────────────────────────────────────────
++  async getChatChannels() {
++    return request<ChatChannel[]>("/api/chat/channels");
++  },
++  async getChatUnread() {
++    return request<{ unread: number }>("/api/chat/unread");
++  },
++  async createChatChannel(name: string, member_ids?: number[]) {
++    return request<ChatChannel>("/api/chat/channels", { method: "POST", body: JSON.stringify({ name, member_ids }) });
++  },
++  async openDirectChat(user_id: number) {
++    return request<ChatChannel>("/api/chat/channels/direct", { method: "POST", body: JSON.stringify({ user_id }) });
++  },
++  async openOrderChat(orderId: number) {
++    return request<ChatChannel>(`/api/chat/order/${orderId}`);
++  },
++  async addChatMembers(channelId: number, member_ids: number[]) {
++    return request<ChatChannel>(`/api/chat/channels/${channelId}/members`, { method: "POST", body: JSON.stringify({ member_ids }) });
++  },
++  async getChatMessages(channelId: number, params?: { after_id?: number; before_id?: number; limit?: number }) {
++    const qs = new URLSearchParams();
++    if (params?.after_id) qs.set("after_id", String(params.after_id));
++    if (params?.before_id) qs.set("before_id", String(params.before_id));
++    if (params?.limit) qs.set("limit", String(params.limit));
++    const q = qs.toString();
++    return request<ChatMessage[]>(`/api/chat/channels/${channelId}/messages${q ? `?${q}` : ""}`);
++  },
++  async sendChatMessage(channelId: number, text: string, reply_to?: number) {
++    return request<ChatMessage>(`/api/chat/channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ text, reply_to }) });
++  },
++  async markChatRead(channelId: number, last_message_id: number) {
++    return request(`/api/chat/channels/${channelId}/read`, { method: "POST", body: JSON.stringify({ last_message_id }) });
++  },
++  async deleteChatMessage(messageId: number) {
++    return request(`/api/chat/messages/${messageId}`, { method: "DELETE" });
++  },
+ };
+ 
+ // ── Types ─────────────────────────────────────────────────────────────────────
+@@ -956,6 +1005,7 @@ export interface OrderStage {
+   transferred_qty?: number;
+   instructions?: string;
+   next_stage_id?: number | null;
++  rework_target_type?: string | null;   // для гейтов AOI/ОТК — тип этапа возврата брака
+   components: { name: string; qty: number; source?: string }[];
+   est_minutes?: number | null;
+   checklist?: string;        // JSON-строка [{text, done}]
+@@ -1277,6 +1327,35 @@ export interface ProductCatalogItem {
+   description?: string;
+   unit: string;
+   is_active: boolean;
++  needs_smd?: boolean;        // признаки канонического маршрута по ТЗ
++  is_receiver?: boolean;
++  needs_assembly?: boolean;
+   created_at: string;
+   updated_at: string;
+ }
++
++export interface ChatChannel {
++  id: number;
++  kind: "group" | "direct" | "order";
++  name?: string;
++  order_id?: number | null;
++  unread: number;
++  members: { user_id: number; user_name?: string }[];
++  member_count: number;
++  last_message?: string | null;
++  last_message_author?: string | null;
++  last_message_at?: string | null;
++  updated_at?: string | null;
++}
++
++export interface ChatMessage {
++  id: number;
++  channel_id: number;
++  user_id: number;
++  user_name?: string;
++  text: string;
++  reply_to?: number | null;
++  is_deleted: boolean;
++  created_at: string;
++  edited_at?: string | null;
++}
+diff --git a/microservices/admin-microservice/app/main.py b/microservices/admin-microservice/app/main.py
+index d30ef9a..5104c9f 100644
+--- a/microservices/admin-microservice/app/main.py
++++ b/microservices/admin-microservice/app/main.py
+@@ -26,6 +26,17 @@ _DEFAULT_STAGE_TYPES = [
+     ("engraving", "Гравировка", "#f59e0b", 3),
+     ("case",      "Корпус",     "#f97316", 4),
+     ("warehouse", "Склад",      "#6b7280", 5),
++    # Канонический маршрут по ТЗ
++    ("distribution",   "Распределение заказа",     "#64748b", 6),
++    ("warehouse_smd",  "Склад СМД",                "#6b7280", 7),
++    ("aoi",            "AOI — контроль",           "#ec4899", 8),
++    ("firmware",       "Прошивка",                 "#14b8a6", 9),
++    ("warehouse_rea",  "Склад РЭА",                "#6b7280", 10),
++    ("issue_rea",      "Выдача со склада РЭА",      "#6b7280", 11),
++    ("otk",            "ОТК",                      "#22c55e", 12),
++    ("warehouse_fg",   "Склад готовой продукции",  "#6b7280", 13),
++    ("order_assembly", "Сборка всего заказа",      "#0ea5e9", 14),
++    ("shipment",       "Отгрузка",                 "#3b82f6", 15),
+ ]
+ 
+ _DEFAULT_ROLES = [
+diff --git a/microservices/api-gateway/app/services/proxy.py b/microservices/api-gateway/app/services/proxy.py
+index a9bceb7..3ba5668 100644
+--- a/microservices/api-gateway/app/services/proxy.py
++++ b/microservices/api-gateway/app/services/proxy.py
+@@ -39,6 +39,7 @@ ROUTES = {
+     "/api/custom-fields":       (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+     "/api/route-templates":     (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+     "/api/orders":              (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_CRITICAL),
++    "/api/chat":                (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+     "/api/my-stages":            (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+     "/api/my-orders":            (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+     "/api/production":           (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
+diff --git a/microservices/business-logic-microservice/app/api/v1/endpoints/chat.py b/microservices/business-logic-microservice/app/api/v1/endpoints/chat.py
+new file mode 100644
+index 0000000..653b173
+--- /dev/null
++++ b/microservices/business-logic-microservice/app/api/v1/endpoints/chat.py
+@@ -0,0 +1,408 @@
++"""
++Чат для общения внутри CRM.
++
++Каналы (chat_channels):
++  group  — групповой канал (произвольные участники)
++  direct — личная переписка двух пользователей
++  order  — обсуждение конкретного заказа (один канал на заказ)
++
++Доставка — через polling (фронт опрашивает /messages?after_id=). У каждого
++участника хранится last_read_message_id для подсчёта непрочитанных.
++"""
++import re
++import logging
++from typing import Optional
++
++from fastapi import APIRouter, Request, HTTPException
++from sqlalchemy import select, text, func
++from pydantic import BaseModel
++
++from app.models.business import ChatChannel, ChatChannelMember, ChatMessage
++from shared.core.notify import notify_user
++
++router = APIRouter()
++logger = logging.getLogger(__name__)
++
++GENERAL_CHANNEL_NAME = "Общий чат"
++_MENTION_RE = re.compile(r"@([A-Za-z0-9_.\-а-яёА-ЯЁ]+)")
++
++
++def _db(r: Request):
++    return r.state.db
++
++
++def _user(r: Request):
++    u = r.state.current_user
++    if not u:
++        raise HTTPException(401, "Не авторизован")
++    return u
++
++
++def _uname(u) -> str:
++    return getattr(u, "full_name", None) or getattr(u, "username", None) or str(u.id)
++
++
++async def _is_member(db, channel_id: int, user_id: int) -> bool:
++    row = (await db.execute(
++        select(ChatChannelMember.id).where(
++            ChatChannelMember.channel_id == channel_id,
++            ChatChannelMember.user_id == user_id,
++        )
++    )).scalar_one_or_none()
++    return row is not None
++
++
++async def _ensure_member(db, channel_id: int, user_id: int, user_name: str = None):
++    if not await _is_member(db, channel_id, user_id):
++        db.add(ChatChannelMember(channel_id=channel_id, user_id=user_id, user_name=user_name))
++        await db.flush()
++
++
++async def _ensure_general(db, user_id: int, user_name: str):
++    """Гарантировать наличие общего канала и членство в нём текущего пользователя."""
++    ch = (await db.execute(
++        select(ChatChannel).where(ChatChannel.kind == "group",
++                                  ChatChannel.name == GENERAL_CHANNEL_NAME)
++    )).scalar_one_or_none()
++    if not ch:
++        ch = ChatChannel(kind="group", name=GENERAL_CHANNEL_NAME, created_by=user_id)
++        db.add(ch)
++        await db.flush()
++    await _ensure_member(db, ch.id, user_id, user_name)
++    return ch
++
++
++async def _channel_payload(db, ch: ChatChannel, user_id: int) -> dict:
++    """Сериализовать канал для текущего пользователя (непрочитанные, последнее сообщение, имя)."""
++    member = (await db.execute(
++        select(ChatChannelMember).where(
++            ChatChannelMember.channel_id == ch.id,
++            ChatChannelMember.user_id == user_id,
++        )
++    )).scalar_one_or_none()
++    last_read = (member.last_read_message_id if member else 0) or 0
++
++    unread = (await db.execute(text("""
++        SELECT COUNT(*) FROM chat_messages
++        WHERE channel_id=:cid AND id > :lr AND is_deleted=false AND user_id != :uid
++    """), {"cid": ch.id, "lr": last_read, "uid": user_id})).scalar() or 0
++
++    last_msg = (await db.execute(text("""
++        SELECT text, user_name, created_at FROM chat_messages
++        WHERE channel_id=:cid AND is_deleted=false ORDER BY id DESC LIMIT 1
++    """), {"cid": ch.id})).mappings().one_or_none()
++
++    members = (await db.execute(
++        select(ChatChannelMember).where(ChatChannelMember.channel_id == ch.id)
++    )).scalars().all()
++
++    # Имя для отображения: direct → имя собеседника, иначе name канала
++    title = ch.name
++    if ch.kind == "direct":
++        other = next((m for m in members if m.user_id != user_id), None)
++        title = (other.user_name if other else None) or "Личная переписка"
++
++    return {
++        "id": ch.id,
++        "kind": ch.kind,
++        "name": title,
++        "order_id": ch.order_id,
++        "unread": int(unread),
++        "members": [{"user_id": m.user_id, "user_name": m.user_name} for m in members],
++        "member_count": len(members),
++        "last_message": (last_msg["text"] if last_msg else None),
++        "last_message_author": (last_msg["user_name"] if last_msg else None),
++        "last_message_at": (last_msg["created_at"].isoformat() if last_msg and last_msg["created_at"] else None),
++        "updated_at": ch.updated_at.isoformat() if ch.updated_at else None,
++    }
++
++
++# ── Каналы ────────────────────────────────────────────────────────────────────
++
++@router.get("/chat/channels")
++async def list_channels(request: Request):
++    u = _user(request)
++    db = _db(request)
++    await _ensure_general(db, u.id, _uname(u))
++    channels = (await db.execute(
++        select(ChatChannel)
++        .join(ChatChannelMember, ChatChannelMember.channel_id == ChatChannel.id)
++        .where(ChatChannelMember.user_id == u.id, ChatChannel.is_archived == False)
++    )).scalars().all()
++    out = [await _channel_payload(db, ch, u.id) for ch in channels]
++    out.sort(key=lambda c: (c["last_message_at"] or c["updated_at"] or ""), reverse=True)
++    await db.commit()
++    return out
++
++
++@router.get("/chat/unread")
++async def total_unread(request: Request):
++    u = _user(request)
++    db = _db(request)
++    total = (await db.execute(text("""
++        SELECT COALESCE(SUM(cnt), 0) FROM (
++            SELECT (
++                SELECT COUNT(*) FROM chat_messages msg
++                WHERE msg.channel_id = m.channel_id
++                  AND msg.id > COALESCE(m.last_read_message_id, 0)
++                  AND msg.is_deleted = false AND msg.user_id != :uid
++            ) AS cnt
++            FROM chat_channel_members m
++            JOIN chat_channels c ON c.id = m.channel_id
++            WHERE m.user_id = :uid AND c.is_archived = false
++        ) s
++    """), {"uid": u.id})).scalar() or 0
++    return {"unread": int(total)}
++
++
++class CreateChannelRequest(BaseModel):
++    name: str
++    member_ids: Optional[list[int]] = None
++
++
++@router.post("/chat/channels", status_code=201)
++async def create_channel(body: CreateChannelRequest, request: Request):
++    u = _user(request)
++    db = _db(request)
++    name = (body.name or "").strip()
++    if not name:
++        raise HTTPException(400, "Укажите название канала")
++    ch = ChatChannel(kind="group", name=name, created_by=u.id)
++    db.add(ch)
++    await db.flush()
++    await _ensure_member(db, ch.id, u.id, _uname(u))
++    for uid in set(body.member_ids or []):
++        if uid == u.id:
++            continue
++        name_row = (await db.execute(text(
++            "SELECT COALESCE(full_name, username) FROM users WHERE id=:id"
++        ), {"id": uid})).scalar_one_or_none()
++        await _ensure_member(db, ch.id, uid, name_row or str(uid))
++    payload = await _channel_payload(db, ch, u.id)
++    await db.commit()
++    return payload
++
++
++class DirectRequest(BaseModel):
++    user_id: int
++
++
++@router.post("/chat/channels/direct")
++async def open_direct(body: DirectRequest, request: Request):
++    """Получить/создать личный канал между текущим пользователем и user_id."""
++    u = _user(request)
++    db = _db(request)
++    if body.user_id == u.id:
++        raise HTTPException(400, "Нельзя открыть переписку с самим собой")
++    # Ищем существующий direct-канал, где оба — участники
++    existing = (await db.execute(text("""
++        SELECT c.id FROM chat_channels c
++        JOIN chat_channel_members m1 ON m1.channel_id=c.id AND m1.user_id=:a
++        JOIN chat_channel_members m2 ON m2.channel_id=c.id AND m2.user_id=:b
++        WHERE c.kind='direct' LIMIT 1
++    """), {"a": u.id, "b": body.user_id})).scalar_one_or_none()
++    if existing:
++        ch = (await db.execute(select(ChatChannel).where(ChatChannel.id == existing))).scalar_one()
++    else:
++        other_name = (await db.execute(text(
++            "SELECT COALESCE(full_name, username) FROM users WHERE id=:id"
++        ), {"id": body.user_id})).scalar_one_or_none()
++        if other_name is None:
++            raise HTTPException(404, "Пользователь не найден")
++        ch = ChatChannel(kind="direct", name=None, created_by=u.id)
++        db.add(ch)
++        await db.flush()
++        await _ensure_member(db, ch.id, u.id, _uname(u))
++        await _ensure_member(db, ch.id, body.user_id, other_name)
++    payload = await _channel_payload(db, ch, u.id)
++    await db.commit()
++    return payload
++
++
++@router.get("/chat/order/{order_id}")
++async def open_order_channel(order_id: int, request: Request):
++    """Получить/создать канал обсуждения заказа и вступить в него."""
++    u = _user(request)
++    db = _db(request)
++    order = (await db.execute(text(
++        "SELECT product_name FROM orders WHERE id=:id"
++    ), {"id": order_id})).mappings().one_or_none()
++    if not order:
++        raise HTTPException(404, "Заказ не найден")
++    ch = (await db.execute(
++        select(ChatChannel).where(ChatChannel.kind == "order", ChatChannel.order_id == order_id)
++    )).scalar_one_or_none()
++    if not ch:
++        ch = ChatChannel(kind="order", order_id=order_id, created_by=u.id,
++                         name=f"Заказ №{order_id} · {order['product_name']}")
++        db.add(ch)
++        await db.flush()
++    await _ensure_member(db, ch.id, u.id, _uname(u))
++    payload = await _channel_payload(db, ch, u.id)
++    await db.commit()
++    return payload
++
++
++class AddMembersRequest(BaseModel):
++    member_ids: list[int]
++
++
++@router.post("/chat/channels/{channel_id}/members")
++async def add_members(channel_id: int, body: AddMembersRequest, request: Request):
++    u = _user(request)
++    db = _db(request)
++    if not await _is_member(db, channel_id, u.id) and u.role != "admin":
++        raise HTTPException(403, "Вы не участник канала")
++    for uid in set(body.member_ids or []):
++        name_row = (await db.execute(text(
++            "SELECT COALESCE(full_name, username) FROM users WHERE id=:id"
++        ), {"id": uid})).scalar_one_or_none()
++        if name_row is not None:
++            await _ensure_member(db, channel_id, uid, name_row)
++    ch = (await db.execute(select(ChatChannel).where(ChatChannel.id == channel_id))).scalar_one()
++    payload = await _channel_payload(db, ch, u.id)
++    await db.commit()
++    return payload
++
++
++# ── Сообщения ─────────────────────────────────────────────────────────────────
++
++@router.get("/chat/channels/{channel_id}/messages")
++async def list_messages(channel_id: int, request: Request,
++                        after_id: int = 0, before_id: Optional[int] = None,
++                        limit: int = 50):
++    u = _user(request)
++    db = _db(request)
++    if not await _is_member(db, channel_id, u.id) and u.role != "admin":
++        raise HTTPException(403, "Вы не участник канала")
++    limit = max(1, min(limit, 200))
++    if after_id:
++        # Новые сообщения (для polling) — по возрастанию
++        rows = (await db.execute(text("""
++            SELECT id, channel_id, user_id, user_name, text, reply_to, is_deleted, created_at, edited_at
++            FROM chat_messages WHERE channel_id=:cid AND id > :aid
++            ORDER BY id ASC LIMIT :lim
++        """), {"cid": channel_id, "aid": after_id, "lim": limit})).mappings().all()
++    elif before_id:
++        # История вверх — берём по убыванию и разворачиваем
++        rows = (await db.execute(text("""
++            SELECT id, channel_id, user_id, user_name, text, reply_to, is_deleted, created_at, edited_at
++            FROM chat_messages WHERE channel_id=:cid AND id < :bid
++            ORDER BY id DESC LIMIT :lim
++        """), {"cid": channel_id, "bid": before_id, "lim": limit})).mappings().all()
++        rows = list(reversed(rows))
++    else:
++        rows = (await db.execute(text("""
++            SELECT id, channel_id, user_id, user_name, text, reply_to, is_deleted, created_at, edited_at
++            FROM chat_messages WHERE channel_id=:cid
++            ORDER BY id DESC LIMIT :lim
++        """), {"cid": channel_id, "lim": limit})).mappings().all()
++        rows = list(reversed(rows))
++    out = []
++    for r in rows:
++        d = dict(r)
++        d["text"] = "" if d["is_deleted"] else d["text"]
++        d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
++        d["edited_at"] = d["edited_at"].isoformat() if d["edited_at"] else None
++        out.append(d)
++    return out
++
++
++class SendMessageRequest(BaseModel):
++    text: str
++    reply_to: Optional[int] = None
++
++
++async def _notify_mentions(db, text_body: str, channel_id: int, author_id: int, author_name: str):
++    """Уведомить упомянутых @username (если они участники канала)."""
++    names = set(_MENTION_RE.findall(text_body or ""))
++    if not names:
++        return
++    for nm in names:
++        uid = (await db.execute(text(
++            "SELECT id FROM users WHERE LOWER(username)=LOWER(:n) OR LOWER(full_name)=LOWER(:n) LIMIT 1"
++        ), {"n": nm})).scalar_one_or_none()
++        if uid and uid != author_id and await _is_member(db, channel_id, uid):
++            await notify_user(db, str(uid), f"{author_name} упомянул вас в чате",
++                              text_body[:140], link="/chat", type_="info")
++
++
++@router.post("/chat/channels/{channel_id}/messages", status_code=201)
++async def send_message(channel_id: int, body: SendMessageRequest, request: Request):
++    u = _user(request)
++    db = _db(request)
++    txt = (body.text or "").strip()
++    if not txt:
++        raise HTTPException(400, "Пустое сообщение")
++    if len(txt) > 5000:
++        raise HTTPException(400, "Сообщение слишком длинное")
++    ch = (await db.execute(select(ChatChannel).where(ChatChannel.id == channel_id))).scalar_one_or_none()
++    if not ch:
++        raise HTTPException(404, "Канал не найден")
++    if not await _is_member(db, channel_id, u.id):
++        # для order/group авто-вступление, для direct — запрет
++        if ch.kind == "direct":
++            raise HTTPException(403, "Вы не участник переписки")
++        await _ensure_member(db, channel_id, u.id, _uname(u))
++
++    msg = ChatMessage(channel_id=channel_id, user_id=u.id, user_name=_uname(u),
++                      text=txt, reply_to=body.reply_to)
++    db.add(msg)
++    await db.flush()
++    # автор сразу «прочитал» своё сообщение
++    await db.execute(text("""
++        UPDATE chat_channel_members SET last_read_message_id=:mid
++        WHERE channel_id=:cid AND user_id=:uid
++    """), {"mid": msg.id, "cid": channel_id, "uid": u.id})
++    await db.execute(text("UPDATE chat_channels SET updated_at=NOW() WHERE id=:id"), {"id": channel_id})
++
++    # Уведомления остальным участникам (без замьюченных) + упоминания
++    others = (await db.execute(text("""
++        SELECT user_id FROM chat_channel_members
++        WHERE channel_id=:cid AND user_id != :uid AND COALESCE(is_muted, false) = false
++    """), {"cid": channel_id, "uid": u.id})).scalars().all()
++    title = f"{_uname(u)}" + (f" · {ch.name}" if ch.kind != "direct" and ch.name else "")
++    for uid in others:
++        await notify_user(db, str(uid), f"Новое сообщение от {title}",
++                          txt[:140], link="/chat", type_="info")
++    await _notify_mentions(db, txt, channel_id, u.id, _uname(u))
++
++    await db.commit()
++    return {
++        "id": msg.id, "channel_id": channel_id, "user_id": u.id,
++        "user_name": _uname(u), "text": txt, "reply_to": body.reply_to,
++        "is_deleted": False,
++        "created_at": msg.created_at.isoformat() if msg.created_at else None,
++        "edited_at": None,
++    }
++
++
++class ReadRequest(BaseModel):
++    last_message_id: int
++
++
++@router.post("/chat/channels/{channel_id}/read")
++async def mark_read(channel_id: int, body: ReadRequest, request: Request):
++    u = _user(request)
++    db = _db(request)
++    await db.execute(text("""
++        UPDATE chat_channel_members
++        SET last_read_message_id = GREATEST(COALESCE(last_read_message_id, 0), :mid)
++        WHERE channel_id=:cid AND user_id=:uid
++    """), {"mid": body.last_message_id, "cid": channel_id, "uid": u.id})
++    await db.commit()
++    return {"ok": True}
++
++
++@router.delete("/chat/messages/{message_id}")
++async def delete_message(message_id: int, request: Request):
++    u = _user(request)
++    db = _db(request)
++    msg = (await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))).scalar_one_or_none()
++    if not msg:
++        raise HTTPException(404, "Сообщение не найдено")
++    if msg.user_id != u.id and u.role not in ("admin", "manager"):
++        raise HTTPException(403, "Можно удалять только свои сообщения")
++    msg.is_deleted = True
++    await db.commit()
++    return {"ok": True}
+diff --git a/microservices/business-logic-microservice/app/api/v1/endpoints/orders.py b/microservices/business-logic-microservice/app/api/v1/endpoints/orders.py
+index 3a4fcc5..5582691 100644
+--- a/microservices/business-logic-microservice/app/api/v1/endpoints/orders.py
++++ b/microservices/business-logic-microservice/app/api/v1/endpoints/orders.py
+@@ -13,6 +13,9 @@ from pydantic import BaseModel
+ 
+ import json
+ from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, StageRouteTemplate
++from app.services.canonical_route import (
++    build_canonical_stages, QC_GATES, FINISHED_GOODS_STAGES, CANONICAL_STAGE_LABELS,
++)
+ from shared.core.notify import notify_user, notify_roles, notify_managers
+ 
+ router = APIRouter()
+@@ -142,6 +145,65 @@ def _m(obj) -> dict:
+     return {c.key: getattr(obj, c.key) for c in obj.__mapper__.column_attrs}
+ 
+ 
++# Какие комплектующие (по типу этапа рецептуры) показывать на каноническом этапе
++_CANONICAL_STAGE_COMPS = {
++    "warehouse_smd": "smd",
++    "smd":           "smd",
++    "engraving":     "engraving",
++    "warehouse_rea": "assembly",
++    "issue_rea":     "assembly",
++    "assembly":      "assembly",
++}
++
++
++async def _resolve_product_flags(db, product_name: str, body) -> dict:
++    """Признаки маршрута изделия: из product_catalog, с переопределением из тела запроса."""
++    row = (await db.execute(text("""
++        SELECT COALESCE(needs_smd, true)       AS needs_smd,
++               COALESCE(is_receiver, false)    AS is_receiver,
++               COALESCE(needs_assembly, true)  AS needs_assembly
++        FROM product_catalog WHERE LOWER(TRIM(name)) = :pn
++    """), {"pn": _norm(product_name)})).mappings().one_or_none()
++    flags = {
++        "needs_smd": True if row is None else bool(row["needs_smd"]),
++        "is_receiver": False if row is None else bool(row["is_receiver"]),
++        "needs_assembly": True if row is None else bool(row["needs_assembly"]),
++    }
++    for k in ("needs_smd", "is_receiver", "needs_assembly"):
++        ov = getattr(body, k, None)
++        if ov is not None:
++            flags[k] = bool(ov)
++    return flags
++
++
++async def _add_canonical_stages(db, order_id: int, flags: dict, stage_comps: list) -> int:
++    """Создать этапы канонического маршрута (ТЗ) для заказа. Возвращает их число."""
++    stages = build_canonical_stages(
++        needs_smd=flags["needs_smd"], is_receiver=flags["is_receiver"],
++        needs_assembly=flags["needs_assembly"],
++    )
++    min_sort = min((s["sort_order"] for s in stages), default=0)
++    for s in stages:
++        comp_match = _CANONICAL_STAGE_COMPS.get(s["stage_type"])
++        comps = [
++            c for c in stage_comps
++            if _component_matches_stage(c.get("source", "warehouse"), comp_match, c.get("production_type", ""))
++        ] if comp_match else []
++        db.add(OrderStage(
++            order_id=order_id,
++            stage_type=s["stage_type"],
++            stage_name=s["stage_name"],
++            status=_initial_stage_status(s["sort_order"], min_sort, s["depends_on_previous"]),
++            sort_order=s["sort_order"],
++            required_role=s["required_role"],
++            depends_on_previous=s["depends_on_previous"],
++            rework_target_type=s["rework_target_type"],
++            instructions=s["instructions"],
++            components_json=json.dumps(comps, ensure_ascii=False),
++        ))
++    return len(stages)
++
++
+ # ── Schemas ──────────────────────────────────────────────────────────────────
+ 
+ class ExtraStage(BaseModel):
+@@ -165,6 +227,12 @@ class OrderCreate(BaseModel):
+     stage_assignments: Optional[dict] = None  # {stage_id: user_id}
+     extra_stages: Optional[List[ExtraStage]] = None  # pipeline после основных этапов
+     skipped_stage_ids: Optional[List[int]] = None  # id этапов рецептуры, пропущенных в этом заказе
++    # Канонический маршрут по ТЗ (12 этапов). Если включён — этапы строятся
++    # генератором по признакам изделия вместо этапов рецептуры.
++    use_canonical_route: Optional[bool] = False
++    needs_smd: Optional[bool] = None        # переопределение признаков изделия для этого заказа
++    is_receiver: Optional[bool] = None
++    needs_assembly: Optional[bool] = None
+ 
+ 
+ class OrderUpdate(BaseModel):
+@@ -566,7 +634,17 @@ async def create_order(body: OrderCreate, request: Request):
+         for r in _all_stage_recipes
+     ]
+ 
+-    if (body.stage_assignments or first_assignment_id) and initial_status == "Создан":
++    if body.use_canonical_route:
++        # Канонический маршрут по ТЗ (12 этапов) — строится по признакам изделия,
++        # независимо от этапов рецептуры.
++        flags = await _resolve_product_flags(db, body.product_name, body)
++        await _add_canonical_stages(db, order.id, flags, stage_comps)
++        if initial_status == "Создан":
++            await db.execute(
++                update(Order).where(Order.id == order.id).values(status="В работе", updated_at=func.now())
++            )
++            initial_status = "В работе"
++    elif (body.stage_assignments or first_assignment_id) and initial_status == "Создан":
+         stage_recipes = _all_stage_recipes
+         r_stages = (await db.execute(text(
+             "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
+@@ -1826,6 +1904,58 @@ async def generate_stages(order_id: int, request: Request):
+     return {"created": created}
+ 
+ 
++class CanonicalRouteRequest(BaseModel):
++    needs_smd: Optional[bool] = None
++    is_receiver: Optional[bool] = None
++    needs_assembly: Optional[bool] = None
++    replace: Optional[bool] = True   # удалить существующие этапы перед генерацией
++
++
++@router.post("/orders/{order_id}/stages/generate-canonical")
++async def generate_canonical_stages(order_id: int, body: CanonicalRouteRequest, request: Request):
++    """Построить канонический маршрут по ТЗ (12 этапов) по признакам изделия.
++    Признаки берутся из product_catalog и переопределяются полями запроса."""
++    u = _perm(request, "orders.edit")
++    db = _db(request)
++    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
++    if not order:
++        raise HTTPException(404, "Заказ не найден")
++    if order.status in ("Отменен", "Отменён", "Завершен", "Завершён"):
++        raise HTTPException(400, f"Заказ в терминальном статусе «{order.status}»")
++
++    if body.replace:
++        await db.execute(delete(OrderStage).where(OrderStage.order_id == order_id))
++
++    # Компоненты рецептуры для отображения на этапах
++    recipes = (await db.execute(text(
++        "SELECT component_name, production_type, source, norm, warehouse_component_name "
++        "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
++    ), {"pn": _norm(order.product_name)})).mappings().all()
++    stage_comps = [
++        {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
++         "qty": float(r["norm"]) * (order.planned_qty or 0),
++         "source": r["source"] or "warehouse",
++         "production_type": r["production_type"] or ""}
++        for r in recipes
++    ]
++
++    flags = await _resolve_product_flags(db, order.product_name, body)
++    created = await _add_canonical_stages(db, order_id, flags, stage_comps)
++
++    if order.status == "Создан":
++        await db.execute(
++            update(Order).where(Order.id == order_id).values(status="В работе", updated_at=func.now())
++        )
++    await _audit(db, u, "order", order_id, "canonical_route_generated",
++                 new_value=json.dumps(flags), details=json.dumps({"created": created}, ensure_ascii=False))
++    await db.commit()
++    rows = (await db.execute(
++        select(OrderStage).where(OrderStage.order_id == order_id).order_by(OrderStage.sort_order, OrderStage.id)
++    )).scalars().all()
++    return {"created": created, "flags": flags,
++            "stages": [{**_m(s), "components": s.components} for s in rows]}
++
++
+ @router.patch("/orders/{order_id}/stages/{stage_id}/assign")
+ async def assign_stage(order_id: int, stage_id: int, request: Request):
+     """Назначить исполнителя на этап."""
+@@ -2101,8 +2231,8 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
+     """После завершения этапа: записать на склад (если warehouse) и активировать
+     следующий этап(ы). Вызывается из обоих путей завершения — ручного complete_stage
+     и автоматического (когда все испол(assignees) сдали свою часть)."""
+-    # Если этап — склад, записываем в finished_goods фактически переданное количество
+-    if stage.stage_type == "warehouse" and order and order.product_name:
++    # Если этап — склад готовой продукции, записываем в finished_goods переданное количество
++    if stage.stage_type in FINISHED_GOODS_STAGES and order and order.product_name:
+         done_total = sum(int(a.qty_done or 0) for a in stage_assignees)
+         qty = int(stage.transferred_qty or 0) or done_total or int(order.planned_qty or 0)
+         if qty > 0:
+@@ -2245,6 +2375,155 @@ async def complete_stage(order_id: int, stage_id: int, request: Request):
+     return {**_m(updated), "components": updated.components}
+ 
+ 
++# ── Гейты контроля качества (AOI / ОТК) канонического маршрута ─────────────────
++
++class StageInspectRequest(BaseModel):
++    result: str                              # "pass" | "fail"
++    comment: Optional[str] = None
++    photo_url: Optional[str] = None
++    needs_components: Optional[bool] = False  # на ОТК: нужны ли ещё компоненты
++    rework_stage_id: Optional[int] = None     # явный этап возврата (иначе авто по rework_target_type)
++
++
++@router.post("/orders/{order_id}/stages/{stage_id}/inspect")
++async def inspect_stage(order_id: int, stage_id: int, body: StageInspectRequest, request: Request):
++    """Контроль качества на этапе-гейте (AOI после СМД, ОТК после сборки РЭА).
++
++      result='pass' — годен: гейт закрывается, маршрут идёт дальше.
++      result='fail' — брак: реактивируется этап-источник (rework_target_type:
++                      AOI→СМД-монтаж, ОТК→сборка РЭА), а гейт блокируется до
++                      повторной сдачи. needs_components=true (на ОТК) дополнительно
++                      переводит заказ в «Ожидает компонентов».
++    """
++    u = _user(request)
++    db = _db(request)
++    stage = (await db.execute(
++        select(OrderStage).where(OrderStage.id == stage_id, OrderStage.order_id == order_id)
++    )).scalar_one_or_none()
++    if not stage:
++        raise HTTPException(404, "Этап не найден")
++    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
++    if order and order.status in ("Отменен", "Отменён", "Завершен", "Завершён"):
++        raise HTTPException(400, f"Заказ в терминальном статусе «{order.status}»")
++
++    # Доступ: ОТК-роль / админ / менеджер, либо назначенный исполнитель этапа
++    if u.role not in ("admin", "manager", "operator_otk"):
++        is_assignee = stage.assigned_to == str(u.id)
++        if not is_assignee:
++            is_assignee = (await db.execute(
++                select(StageAssignee.id).where(
++                    StageAssignee.stage_id == stage_id, StageAssignee.user_id == u.id)
++            )).scalar_one_or_none() is not None
++        if not is_assignee:
++            raise HTTPException(403, "Нет прав на проверку этого этапа")
++
++    result = (body.result or "").lower()
++    comment = (body.comment or "").strip()
++    target_type = stage.rework_target_type or QC_GATES.get(stage.stage_type)
++
++    if result == "pass" and not body.needs_components:
++        # Годен → закрываем гейт и двигаем маршрут дальше
++        stage_assignees = (await db.execute(
++            select(StageAssignee).where(StageAssignee.stage_id == stage_id)
++        )).scalars().all()
++        await db.execute(
++            update(OrderStage).where(OrderStage.id == stage_id).values(
++                status="done", completed_at=func.now(),
++                comment=comment or stage.comment,
++                result_photo=body.photo_url or stage.result_photo, updated_at=func.now())
++        )
++        stage.status = "done"
++        await _advance_workflow_after_stage(db, order, stage, stage_assignees)
++        await _audit(db, u, "stage", stage_id, "inspect_pass",
++                     new_value="pass",
++                     details=json.dumps({"order_id": order_id, "comment": comment}, ensure_ascii=False))
++        await _fire_webhooks(db, "stage.inspect_pass", {
++            "order_id": order_id, "stage_id": stage_id, "stage_type": stage.stage_type})
++        await db.commit()
++        return {"result": "pass", "stage_id": stage_id, "rework_stage_id": None}
++
++    # result == "fail" (или нужны компоненты) → возврат на доработку
++    if result not in ("pass", "fail"):
++        raise HTTPException(400, "result должен быть 'pass' или 'fail'")
++
++    # Выбор этапа-источника для возврата брака
++    target = None
++    if body.rework_stage_id:
++        target = (await db.execute(text("""
++            SELECT id FROM order_stages WHERE id=:sid AND order_id=:oid AND id != :gate
++        """), {"sid": body.rework_stage_id, "oid": order_id, "gate": stage_id})).scalar_one_or_none()
++    if not target and target_type:
++        target = (await db.execute(text("""
++            SELECT id FROM order_stages
++            WHERE order_id=:oid AND stage_type=:st AND id != :gate AND sort_order < :gs
++            ORDER BY (status='done') DESC, sort_order DESC LIMIT 1
++        """), {"oid": order_id, "st": target_type, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
++    if not target:
++        target = (await db.execute(text("""
++            SELECT id FROM order_stages
++            WHERE order_id=:oid AND id != :gate AND sort_order < :gs
++            ORDER BY sort_order DESC LIMIT 1
++        """), {"oid": order_id, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
++
++    if target:
++        await db.execute(text("""
++            UPDATE order_stages SET status='pending', started_at=NULL,
++                completed_at=NULL, updated_at=NOW() WHERE id=:sid
++        """), {"sid": target})
++        await db.execute(text("""
++            UPDATE stage_assignees SET status='pending', started_at=NULL,
++                completed_at=NULL, updated_at=NOW() WHERE stage_id=:sid
++        """), {"sid": target})
++
++    # Блокируем сам гейт до повторной сдачи источника
++    await db.execute(text("""
++        UPDATE order_stages SET status='blocked', started_at=NULL,
++            completed_at=NULL, result_photo=:p, updated_at=NOW() WHERE id=:gate
++    """), {"gate": stage_id, "p": body.photo_url or stage.result_photo})
++
++    # Статус заказа
++    new_status = "Ожидает компонентов" if body.needs_components else "Доработка"
++    await db.execute(text("""
++        UPDATE orders SET status=:s, otk_comment=:c,
++            otk_attempts = COALESCE(otk_attempts,0) + CASE WHEN :is_otk THEN 1 ELSE 0 END,
++            updated_at=NOW() WHERE id=:oid
++    """), {"s": new_status, "c": comment, "oid": order_id, "is_otk": stage.stage_type == "otk"})
++
++    # Уведомления исполнителям источника + руководителям
++    notify_ids = set()
++    if target:
++        a = (await db.execute(text("SELECT assigned_to FROM order_stages WHERE id=:sid"),
++                              {"sid": target})).scalar()
++        if a:
++            notify_ids.add(str(a))
++        sa = (await db.execute(text(
++            "SELECT DISTINCT user_id FROM stage_assignees WHERE stage_id=:sid AND user_id IS NOT NULL"
++        ), {"sid": target})).scalars().all()
++        notify_ids |= {str(i) for i in sa}
++    gate_label = CANONICAL_STAGE_LABELS.get(stage.stage_type, stage.stage_type)
++    msg = f"{(order.product_name if order else '')}: брак на «{gate_label}». {comment}".strip()
++    for uid in notify_ids:
++        await notify_user(db, uid, f"Заказ №{order_id}: возврат на доработку", msg,
++                          link="/my-tasks", type_="warning")
++    await notify_managers(db, f"{gate_label}: заказ №{order_id} — брак", msg,
++                          link=f"/orders/{order_id}", type_="warning")
++    if body.needs_components:
++        await notify_managers(db, f"Заказ №{order_id}: требуются доп. компоненты",
++                              msg, link=f"/orders/{order_id}", type_="warning")
++
++    await _audit(db, u, "stage", stage_id, "inspect_fail",
++                 new_value="fail",
++                 details=json.dumps({"order_id": order_id, "rework_stage_id": target,
++                                     "needs_components": bool(body.needs_components),
++                                     "comment": comment}, ensure_ascii=False))
++    await _fire_webhooks(db, "stage.inspect_fail", {
++        "order_id": order_id, "stage_id": stage_id, "stage_type": stage.stage_type,
++        "rework_stage_id": target})
++    await db.commit()
++    return {"result": "fail", "stage_id": stage_id, "rework_stage_id": target,
++            "order_status": new_status}
++
++
+ # ── Маршрутизатор этапов ──────────────────────────────────────────────────────
+ 
+ @router.get("/orders/{order_id}/stages/{stage_id}/route-options")
+diff --git a/microservices/business-logic-microservice/app/main.py b/microservices/business-logic-microservice/app/main.py
+index 4ac4f26..c4e4687 100644
+--- a/microservices/business-logic-microservice/app/main.py
++++ b/microservices/business-logic-microservice/app/main.py
+@@ -4,9 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
+ 
+ from app.core.config import settings
+ from app.api.v1.endpoints.orders import router as orders_router
++from app.api.v1.endpoints.chat import router as chat_router
+ from shared.core.database import make_engine, make_session_factory, Base
+ from shared.core.security import decode_token
+-from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee  # noqa
++from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, ChatChannel, ChatChannelMember, ChatMessage  # noqa
+ 
+ engine = make_engine(settings.DATABASE_URL)
+ session_factory = make_session_factory(engine)
+@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
+         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS pause_reason TEXT"))
+         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP"))
+         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tags TEXT"))
++        # Канонический маршрут (ТЗ) — тип этапа возврата брака для гейтов AOI/ОТК
++        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)"))
+     yield
+     await engine.dispose()
+ 
+@@ -84,6 +87,7 @@ async def db_and_auth_middleware(request: Request, call_next) -> Response:
+ 
+ 
+ app.include_router(orders_router, prefix="/api", tags=["orders", "production"])
++app.include_router(chat_router, prefix="/api", tags=["chat"])
+ 
+ 
+ @app.get("/health")
+diff --git a/microservices/business-logic-microservice/app/models/business.py b/microservices/business-logic-microservice/app/models/business.py
+index e2a1423..d11894e 100644
+--- a/microservices/business-logic-microservice/app/models/business.py
++++ b/microservices/business-logic-microservice/app/models/business.py
+@@ -143,6 +143,7 @@ class OrderStage(Base):
+     transferred_qty = Column(Integer)                 # фактически передано следующему этапу
+     instructions  = Column(Text)                      # инструкция для исполнителя
+     next_stage_id = Column(Integer, nullable=True)    # куда идёт после завершения (id другого order_stage)
++    rework_target_type = Column(String(50))           # для гейтов (aoi/otk): тип этапа, куда уходит брак
+     components_json = Column(Text, default="[]")
+     est_minutes   = Column(Integer)                   # норматив времени на этап (мин)
+     checklist     = Column(Text, default="[]")        # JSON: [{text, done}]
+@@ -187,6 +188,53 @@ class StageAssignee(Base):
+     )
+ 
+ 
++class ChatChannel(Base):
++    """Канал чата. kind: group | direct | order.
++    Для order-каналов order_id указывает на заказ (один канал на заказ)."""
++    __tablename__ = "chat_channels"
++
++    id          = Column(Integer, primary_key=True)
++    kind        = Column(String(20), nullable=False, default="group")  # group | direct | order
++    name        = Column(String(200))                 # для group/order; для direct формируется на лету
++    order_id    = Column(Integer, nullable=True)       # для kind='order'
++    created_by  = Column(Integer)
++    is_archived = Column(Boolean, default=False)
++    created_at  = Column(DateTime, server_default=func.now())
++    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
++
++
++class ChatChannelMember(Base):
++    """Участник канала + его прочитанность (last_read_message_id для непрочитанных)."""
++    __tablename__ = "chat_channel_members"
++
++    id                   = Column(Integer, primary_key=True)
++    channel_id           = Column(Integer, ForeignKey("chat_channels.id", ondelete="CASCADE"), nullable=False)
++    user_id              = Column(Integer, nullable=False)
++    user_name            = Column(String(200))
++    last_read_message_id = Column(Integer, default=0)
++    is_muted             = Column(Boolean, default=False)
++    joined_at            = Column(DateTime, server_default=func.now())
++
++    __table_args__ = (
++        UniqueConstraint("channel_id", "user_id", name="uq_channel_user"),
++    )
++
++
++class ChatMessage(Base):
++    """Сообщение в канале чата."""
++    __tablename__ = "chat_messages"
++
++    id         = Column(Integer, primary_key=True)
++    channel_id = Column(Integer, ForeignKey("chat_channels.id", ondelete="CASCADE"), nullable=False)
++    user_id    = Column(Integer, nullable=False)
++    user_name  = Column(String(200))
++    text       = Column(Text, nullable=False)
++    reply_to   = Column(Integer, nullable=True)        # id сообщения, на которое отвечают
++    is_deleted = Column(Boolean, default=False)
++    created_at = Column(DateTime, server_default=func.now())
++    edited_at  = Column(DateTime, nullable=True)
++
++
+ class StageRouteTemplate(Base):
+     """Переиспользуемый шаблон маршрута производства (#33).
+     stages_json — список этапов: [{stage_name, stage_type, required_role,
+diff --git a/microservices/business-logic-microservice/app/services/canonical_route.py b/microservices/business-logic-microservice/app/services/canonical_route.py
+new file mode 100644
+index 0000000..a65ec75
+--- /dev/null
++++ b/microservices/business-logic-microservice/app/services/canonical_route.py
+@@ -0,0 +1,102 @@
++"""
++Канонический производственный маршрут заказа (ТЗ).
++
++12 шагов из ТЗ (шаг «формирование заказа» = само создание заказа, поэтому
++этапами становятся шаги 2–12):
++
++  1. формирование заказа               → create_order (не этап)
++  2. распределение заказа              → distribution
++  3. склад СМД                         → warehouse_smd   (выдача СМД-компонентов)
++  4. СМД-монтаж                        → smd
++  5. AOI (контроль)                    → aoi    [гейт] брак → назад в СМД-монтаж
++  6. гравировка                        → engraving
++  7. ветвление по признаку «приёмник»:
++       приёмник     → прошивка         → firmware → склад готовой продукции
++       не приёмник  → склад РЭА        → warehouse_rea
++                      выдача со склада  → issue_rea
++                      сборка РЭА        → assembly
++                      проверка ОТК      → otk    [гейт] брак → назад в сборку РЭА
++  8. склад готовой продукции           → warehouse_fg
++  9. сборка всего заказа               → order_assembly
++ 10. отгрузка                          → shipment
++
++Признаки изделия (product_catalog):
++  needs_smd       — нужен ли блок СМД (склад СМД + монтаж + AOI + гравировка)
++  is_receiver     — изделие-приёмник (после СМД — прошивка, без сборки РЭА)
++  needs_assembly  — нужна ли сборка РЭА (склад РЭА → выдача → сборка → ОТК)
++"""
++
++# Гейты контроля качества: stage_type → stage_type, куда возвращается брак.
++QC_GATES = {
++    "aoi": "smd",        # AOI: брак → переделка СМД-монтажа → снова AOI
++    "otk": "assembly",   # ОТК: брак → назад в сборку РЭА → снова ОТК
++}
++
++# Этапы-склады, которые при завершении приходуют готовую продукцию.
++FINISHED_GOODS_STAGES = {"warehouse_fg", "warehouse"}
++
++# Канонические типы этапов и их человекочитаемые названия.
++CANONICAL_STAGE_LABELS = {
++    "distribution":   "Распределение заказа",
++    "warehouse_smd":  "Склад СМД",
++    "smd":            "СМД-монтаж",
++    "aoi":            "AOI — контроль",
++    "engraving":      "Гравировка",
++    "firmware":       "Прошивка",
++    "warehouse_rea":  "Склад РЭА",
++    "issue_rea":      "Выдача со склада РЭА",
++    "assembly":       "Сборка РЭА",
++    "otk":            "Проверка ОТК",
++    "warehouse_fg":   "Склад готовой продукции",
++    "order_assembly": "Сборка всего заказа",
++    "shipment":       "Отгрузка",
++}
++
++# Роль по умолчанию для этапа (если в системе заведена соответствующая роль).
++_DEFAULT_ROLE = {
++    "smd":       "operator_smd",
++    "engraving": "operator_engraving",
++    "aoi":       "operator_otk",
++    "otk":       "operator_otk",
++    "shipment":  "operator_shipment",
++}
++
++
++def build_canonical_stages(
++    needs_smd: bool = True,
++    is_receiver: bool = False,
++    needs_assembly: bool = True,
++) -> list[dict]:
++    """Собрать список этапов канонического маршрута по признакам изделия.
++
++    Возвращает список словарей с полями:
++      stage_type, stage_name, sort_order, depends_on_previous,
++      required_role, rework_target_type, instructions
++    Этапы идут последовательно (depends_on_previous=1); sort_order с шагом 10.
++    """
++    steps: list[str] = ["distribution"]
++
++    if needs_smd:
++        steps += ["warehouse_smd", "smd", "aoi", "engraving"]
++
++    if is_receiver:
++        # Приёмник: прошивка, затем сразу склад готовой продукции (без сборки РЭА)
++        steps += ["firmware"]
++    elif needs_assembly:
++        # Не приёмник: полный цикл РЭА
++        steps += ["warehouse_rea", "issue_rea", "assembly", "otk"]
++
++    steps += ["warehouse_fg", "order_assembly", "shipment"]
++
++    out: list[dict] = []
++    for i, st in enumerate(steps):
++        out.append({
++            "stage_type": st,
++            "stage_name": CANONICAL_STAGE_LABELS.get(st, st),
++            "sort_order": (i + 1) * 10,
++            "depends_on_previous": 1,
++            "required_role": _DEFAULT_ROLE.get(st),
++            "rework_target_type": QC_GATES.get(st),
++            "instructions": None,
++        })
++    return out
+diff --git a/microservices/products-microservice/app/api/v1/endpoints/products.py b/microservices/products-microservice/app/api/v1/endpoints/products.py
+index 06090d5..fe1a936 100644
+--- a/microservices/products-microservice/app/api/v1/endpoints/products.py
++++ b/microservices/products-microservice/app/api/v1/endpoints/products.py
+@@ -707,6 +707,9 @@ async def create_catalog_item(request: Request):
+         description=body.get("description"),
+         unit=body.get("unit", "шт"),
+         is_active=body.get("is_active", True),
++        needs_smd=body.get("needs_smd", True),
++        is_receiver=body.get("is_receiver", False),
++        needs_assembly=body.get("needs_assembly", True),
+     )
+     db.add(item)
+     await db.flush()
+@@ -724,7 +727,8 @@ async def update_catalog_item(item_id: int, request: Request):
+     item = (await db.execute(select(ProductCatalog).where(ProductCatalog.id == item_id))).scalar_one_or_none()
+     if not item:
+         raise HTTPException(404, "Не найдено")
+-    allowed = ["name", "sku", "category", "description", "unit", "is_active"]
++    allowed = ["name", "sku", "category", "description", "unit", "is_active",
++               "needs_smd", "is_receiver", "needs_assembly"]
+     for k in allowed:
+         if k in body:
+             setattr(item, k, body[k])
+diff --git a/microservices/products-microservice/app/main.py b/microservices/products-microservice/app/main.py
+index 4d07efc..5e6e615 100644
+--- a/microservices/products-microservice/app/main.py
++++ b/microservices/products-microservice/app/main.py
+@@ -24,6 +24,10 @@ async def lifespan(app: FastAPI):
+         await conn.execute(text("ALTER TABLE recipe_stages ADD COLUMN IF NOT EXISTS depends_on_previous INTEGER DEFAULT 1"))
+         await conn.execute(text("ALTER TABLE recipe_stages ADD COLUMN IF NOT EXISTS transfer_qty INTEGER DEFAULT 0"))
+         await conn.execute(text("ALTER TABLE recipe_product_order ADD COLUMN IF NOT EXISTS assigned_role VARCHAR(50)"))
++        # Признаки канонического маршрута по ТЗ на изделии
++        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_smd BOOLEAN DEFAULT true"))
++        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS is_receiver BOOLEAN DEFAULT false"))
++        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_assembly BOOLEAN DEFAULT true"))
+         # Авто-импорт существующих изделий в каталог из recipe_product_order
+         await conn.execute(text("""
+             INSERT INTO product_catalog (name)
+diff --git a/microservices/products-microservice/app/models/products.py b/microservices/products-microservice/app/models/products.py
+index 5386386..eb31558 100644
+--- a/microservices/products-microservice/app/models/products.py
++++ b/microservices/products-microservice/app/models/products.py
+@@ -14,6 +14,10 @@ class ProductCatalog(Base):
+     description = Column(Text)                  # описание
+     unit        = Column(String(50), default="шт")  # единица измерения
+     is_active   = Column(Boolean, default=True)
++    # Признаки канонического маршрута по ТЗ (определяют ветвление этапов заказа):
++    needs_smd      = Column(Boolean, default=True)   # нужен блок СМД (склад СМД→монтаж→AOI→гравировка)
++    is_receiver    = Column(Boolean, default=False)  # приёмник: после СМД — прошивка, без сборки РЭА
++    needs_assembly = Column(Boolean, default=True)   # нужна сборка РЭА (склад РЭА→выдача→сборка→ОТК)
+     created_at  = Column(DateTime, server_default=func.now())
+     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+ 
+-- 
+2.43.0
+

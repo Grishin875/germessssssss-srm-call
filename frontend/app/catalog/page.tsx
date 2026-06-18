@@ -25,7 +25,7 @@ export default function CatalogPage() {
 
   const [showModal, setShowModal] = useState(false);
   const [editItem, setEditItem] = useState<ProductCatalogItem | null>(null);
-  const [form, setForm] = useState({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true });
+  const [form, setForm] = useState({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true, needs_smd: true, is_receiver: false, needs_assembly: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -45,14 +45,14 @@ export default function CatalogPage() {
 
   function openCreate() {
     setEditItem(null);
-    setForm({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true });
+    setForm({ name: "", sku: "", category: "", description: "", unit: "шт", is_active: true, needs_smd: true, is_receiver: false, needs_assembly: true });
     setError("");
     setShowModal(true);
   }
 
   function openEdit(item: ProductCatalogItem) {
     setEditItem(item);
-    setForm({ name: item.name, sku: item.sku || "", category: item.category || "", description: item.description || "", unit: item.unit || "шт", is_active: item.is_active });
+    setForm({ name: item.name, sku: item.sku || "", category: item.category || "", description: item.description || "", unit: item.unit || "шт", is_active: item.is_active, needs_smd: item.needs_smd !== false, is_receiver: item.is_receiver === true, needs_assembly: item.needs_assembly !== false });
     setError("");
     setShowModal(true);
   }
@@ -61,7 +61,7 @@ export default function CatalogPage() {
     if (!form.name.trim()) { setError("Название обязательно"); return; }
     setSaving(true); setError("");
     try {
-      const data = { name: form.name.trim(), sku: form.sku || undefined, category: form.category || undefined, description: form.description || undefined, unit: form.unit, is_active: form.is_active };
+      const data = { name: form.name.trim(), sku: form.sku || undefined, category: form.category || undefined, description: form.description || undefined, unit: form.unit, is_active: form.is_active, needs_smd: form.needs_smd, is_receiver: form.is_receiver, needs_assembly: form.needs_assembly };
       if (editItem) {
         await api.updateCatalogItem(editItem.id, data);
       } else {
@@ -232,6 +232,26 @@ export default function CatalogPage() {
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 15, height: 15 }} />
               Активен (отображается при создании заказов)
             </label>
+          </div>
+          {/* Признаки канонического маршрута по ТЗ */}
+          <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 8 }}>
+              Маршрут производства (по ТЗ)
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400 }}>
+                <input type="checkbox" checked={form.needs_smd} onChange={e => setForm(f => ({ ...f, needs_smd: e.target.checked }))} style={{ width: 15, height: 15 }} />
+                Блок СМД (склад СМД → монтаж → AOI → гравировка)
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400 }}>
+                <input type="checkbox" checked={form.is_receiver} onChange={e => setForm(f => ({ ...f, is_receiver: e.target.checked }))} style={{ width: 15, height: 15 }} />
+                Приёмник (после СМД — прошивка, без сборки РЭА)
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: 400, opacity: form.is_receiver ? 0.5 : 1 }}>
+                <input type="checkbox" checked={form.needs_assembly} disabled={form.is_receiver} onChange={e => setForm(f => ({ ...f, needs_assembly: e.target.checked }))} style={{ width: 15, height: 15 }} />
+                Сборка РЭА (склад РЭА → выдача → сборка → ОТК)
+              </label>
+            </div>
           </div>
         </div>
       </Modal>

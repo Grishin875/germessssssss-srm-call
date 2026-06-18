@@ -4,9 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.v1.endpoints.orders import router as orders_router
+from app.api.v1.endpoints.chat import router as chat_router
 from shared.core.database import make_engine, make_session_factory, Base
 from shared.core.security import decode_token
-from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee  # noqa
+from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, ChatChannel, ChatChannelMember, ChatMessage  # noqa
 
 engine = make_engine(settings.DATABASE_URL)
 session_factory = make_session_factory(engine)
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS pause_reason TEXT"))
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP"))
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tags TEXT"))
+        # Канонический маршрут (ТЗ) — тип этапа возврата брака для гейтов AOI/ОТК
+        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)"))
     yield
     await engine.dispose()
 
@@ -84,6 +87,7 @@ async def db_and_auth_middleware(request: Request, call_next) -> Response:
 
 
 app.include_router(orders_router, prefix="/api", tags=["orders", "production"])
+app.include_router(chat_router, prefix="/api", tags=["chat"])
 
 
 @app.get("/health")

@@ -707,6 +707,9 @@ async def create_catalog_item(request: Request):
         description=body.get("description"),
         unit=body.get("unit", "шт"),
         is_active=body.get("is_active", True),
+        needs_smd=body.get("needs_smd", True),
+        is_receiver=body.get("is_receiver", False),
+        needs_assembly=body.get("needs_assembly", True),
     )
     db.add(item)
     await db.flush()
@@ -724,7 +727,8 @@ async def update_catalog_item(item_id: int, request: Request):
     item = (await db.execute(select(ProductCatalog).where(ProductCatalog.id == item_id))).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Не найдено")
-    allowed = ["name", "sku", "category", "description", "unit", "is_active"]
+    allowed = ["name", "sku", "category", "description", "unit", "is_active",
+               "needs_smd", "is_receiver", "needs_assembly"]
     for k in allowed:
         if k in body:
             setattr(item, k, body[k])

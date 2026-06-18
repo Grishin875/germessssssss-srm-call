@@ -13,6 +13,9 @@ from pydantic import BaseModel
 
 import json
 from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, StageRouteTemplate
+from app.services.canonical_route import (
+    build_canonical_stages, QC_GATES, FINISHED_GOODS_STAGES, CANONICAL_STAGE_LABELS,
+)
 from shared.core.notify import notify_user, notify_roles, notify_managers
 
 router = APIRouter()
@@ -142,6 +145,65 @@ def _m(obj) -> dict:
     return {c.key: getattr(obj, c.key) for c in obj.__mapper__.column_attrs}
 
 
+# Какие комплектующие (по типу этапа рецептуры) показывать на каноническом этапе
+_CANONICAL_STAGE_COMPS = {
+    "warehouse_smd": "smd",
+    "smd":           "smd",
+    "engraving":     "engraving",
+    "warehouse_rea": "assembly",
+    "issue_rea":     "assembly",
+    "assembly":      "assembly",
+}
+
+
+async def _resolve_product_flags(db, product_name: str, body) -> dict:
+    """Признаки маршрута изделия: из product_catalog, с переопределением из тела запроса."""
+    row = (await db.execute(text("""
+        SELECT COALESCE(needs_smd, true)       AS needs_smd,
+               COALESCE(is_receiver, false)    AS is_receiver,
+               COALESCE(needs_assembly, true)  AS needs_assembly
+        FROM product_catalog WHERE LOWER(TRIM(name)) = :pn
+    """), {"pn": _norm(product_name)})).mappings().one_or_none()
+    flags = {
+        "needs_smd": True if row is None else bool(row["needs_smd"]),
+        "is_receiver": False if row is None else bool(row["is_receiver"]),
+        "needs_assembly": True if row is None else bool(row["needs_assembly"]),
+    }
+    for k in ("needs_smd", "is_receiver", "needs_assembly"):
+        ov = getattr(body, k, None)
+        if ov is not None:
+            flags[k] = bool(ov)
+    return flags
+
+
+async def _add_canonical_stages(db, order_id: int, flags: dict, stage_comps: list) -> int:
+    """Создать этапы канонического маршрута (ТЗ) для заказа. Возвращает их число."""
+    stages = build_canonical_stages(
+        needs_smd=flags["needs_smd"], is_receiver=flags["is_receiver"],
+        needs_assembly=flags["needs_assembly"],
+    )
+    min_sort = min((s["sort_order"] for s in stages), default=0)
+    for s in stages:
+        comp_match = _CANONICAL_STAGE_COMPS.get(s["stage_type"])
+        comps = [
+            c for c in stage_comps
+            if _component_matches_stage(c.get("source", "warehouse"), comp_match, c.get("production_type", ""))
+        ] if comp_match else []
+        db.add(OrderStage(
+            order_id=order_id,
+            stage_type=s["stage_type"],
+            stage_name=s["stage_name"],
+            status=_initial_stage_status(s["sort_order"], min_sort, s["depends_on_previous"]),
+            sort_order=s["sort_order"],
+            required_role=s["required_role"],
+            depends_on_previous=s["depends_on_previous"],
+            rework_target_type=s["rework_target_type"],
+            instructions=s["instructions"],
+            components_json=json.dumps(comps, ensure_ascii=False),
+        ))
+    return len(stages)
+
+
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 class ExtraStage(BaseModel):
@@ -165,6 +227,12 @@ class OrderCreate(BaseModel):
     stage_assignments: Optional[dict] = None  # {stage_id: user_id}
     extra_stages: Optional[List[ExtraStage]] = None  # pipeline после основных этапов
     skipped_stage_ids: Optional[List[int]] = None  # id этапов рецептуры, пропущенных в этом заказе
+    # Канонический маршрут по ТЗ (12 этапов). Если включён — этапы строятся
+    # генератором по признакам изделия вместо этапов рецептуры.
+    use_canonical_route: Optional[bool] = False
+    needs_smd: Optional[bool] = None        # переопределение признаков изделия для этого заказа
+    is_receiver: Optional[bool] = None
+    needs_assembly: Optional[bool] = None
 
 
 class OrderUpdate(BaseModel):
@@ -566,7 +634,17 @@ async def create_order(body: OrderCreate, request: Request):
         for r in _all_stage_recipes
     ]
 
-    if (body.stage_assignments or first_assignment_id) and initial_status == "Создан":
+    if body.use_canonical_route:
+        # Канонический маршрут по ТЗ (12 этапов) — строится по признакам изделия,
+        # независимо от этапов рецептуры.
+        flags = await _resolve_product_flags(db, body.product_name, body)
+        await _add_canonical_stages(db, order.id, flags, stage_comps)
+        if initial_status == "Создан":
+            await db.execute(
+                update(Order).where(Order.id == order.id).values(status="В работе", updated_at=func.now())
+            )
+            initial_status = "В работе"
+    elif (body.stage_assignments or first_assignment_id) and initial_status == "Создан":
         stage_recipes = _all_stage_recipes
         r_stages = (await db.execute(text(
             "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
@@ -1831,6 +1909,58 @@ async def generate_stages(order_id: int, request: Request):
     return [{**_m(s), "components": s.components} for s in rows]
 
 
+class CanonicalRouteRequest(BaseModel):
+    needs_smd: Optional[bool] = None
+    is_receiver: Optional[bool] = None
+    needs_assembly: Optional[bool] = None
+    replace: Optional[bool] = True   # удалить существующие этапы перед генерацией
+
+
+@router.post("/orders/{order_id}/stages/generate-canonical")
+async def generate_canonical_stages(order_id: int, body: CanonicalRouteRequest, request: Request):
+    """Построить канонический маршрут по ТЗ (12 этапов) по признакам изделия.
+    Признаки берутся из product_catalog и переопределяются полями запроса."""
+    u = _perm(request, "orders.edit")
+    db = _db(request)
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Заказ не найден")
+    if order.status in ("Отменен", "Отменён", "Завершен", "Завершён"):
+        raise HTTPException(400, f"Заказ в терминальном статусе «{order.status}»")
+
+    if body.replace:
+        await db.execute(delete(OrderStage).where(OrderStage.order_id == order_id))
+
+    # Компоненты рецептуры для отображения на этапах
+    recipes = (await db.execute(text(
+        "SELECT component_name, production_type, source, norm, warehouse_component_name "
+        "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
+    ), {"pn": _norm(order.product_name)})).mappings().all()
+    stage_comps = [
+        {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
+         "qty": float(r["norm"]) * (order.planned_qty or 0),
+         "source": r["source"] or "warehouse",
+         "production_type": r["production_type"] or ""}
+        for r in recipes
+    ]
+
+    flags = await _resolve_product_flags(db, order.product_name, body)
+    created = await _add_canonical_stages(db, order_id, flags, stage_comps)
+
+    if order.status == "Создан":
+        await db.execute(
+            update(Order).where(Order.id == order_id).values(status="В работе", updated_at=func.now())
+        )
+    await _audit(db, u, "order", order_id, "canonical_route_generated",
+                 new_value=json.dumps(flags), details=json.dumps({"created": created}, ensure_ascii=False))
+    await db.commit()
+    rows = (await db.execute(
+        select(OrderStage).where(OrderStage.order_id == order_id).order_by(OrderStage.sort_order, OrderStage.id)
+    )).scalars().all()
+    return {"created": created, "flags": flags,
+            "stages": [{**_m(s), "components": s.components} for s in rows]}
+
+
 @router.patch("/orders/{order_id}/stages/{stage_id}/assign")
 async def assign_stage(order_id: int, stage_id: int, request: Request):
     """Назначить исполнителя на этап."""
@@ -2106,8 +2236,8 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
     """После завершения этапа: записать на склад (если warehouse) и активировать
     следующий этап(ы). Вызывается из обоих путей завершения — ручного complete_stage
     и автоматического (когда все испол(assignees) сдали свою часть)."""
-    # Если этап — склад, записываем в finished_goods фактически переданное количество
-    if stage.stage_type == "warehouse" and order and order.product_name:
+    # Если этап — склад готовой продукции, записываем в finished_goods переданное количество
+    if stage.stage_type in FINISHED_GOODS_STAGES and order and order.product_name:
         done_total = sum(int(a.qty_done or 0) for a in stage_assignees)
         qty = int(stage.transferred_qty or 0) or done_total or int(order.planned_qty or 0)
         if qty > 0:
@@ -2248,6 +2378,155 @@ async def complete_stage(order_id: int, stage_id: int, request: Request):
     await db.commit()
     updated = (await db.execute(select(OrderStage).where(OrderStage.id == stage_id))).scalar_one()
     return {**_m(updated), "components": updated.components}
+
+
+# ── Гейты контроля качества (AOI / ОТК) канонического маршрута ─────────────────
+
+class StageInspectRequest(BaseModel):
+    result: str                              # "pass" | "fail"
+    comment: Optional[str] = None
+    photo_url: Optional[str] = None
+    needs_components: Optional[bool] = False  # на ОТК: нужны ли ещё компоненты
+    rework_stage_id: Optional[int] = None     # явный этап возврата (иначе авто по rework_target_type)
+
+
+@router.post("/orders/{order_id}/stages/{stage_id}/inspect")
+async def inspect_stage(order_id: int, stage_id: int, body: StageInspectRequest, request: Request):
+    """Контроль качества на этапе-гейте (AOI после СМД, ОТК после сборки РЭА).
+
+      result='pass' — годен: гейт закрывается, маршрут идёт дальше.
+      result='fail' — брак: реактивируется этап-источник (rework_target_type:
+                      AOI→СМД-монтаж, ОТК→сборка РЭА), а гейт блокируется до
+                      повторной сдачи. needs_components=true (на ОТК) дополнительно
+                      переводит заказ в «Ожидает компонентов».
+    """
+    u = _user(request)
+    db = _db(request)
+    stage = (await db.execute(
+        select(OrderStage).where(OrderStage.id == stage_id, OrderStage.order_id == order_id)
+    )).scalar_one_or_none()
+    if not stage:
+        raise HTTPException(404, "Этап не найден")
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if order and order.status in ("Отменен", "Отменён", "Завершен", "Завершён"):
+        raise HTTPException(400, f"Заказ в терминальном статусе «{order.status}»")
+
+    # Доступ: ОТК-роль / админ / менеджер, либо назначенный исполнитель этапа
+    if u.role not in ("admin", "manager", "operator_otk"):
+        is_assignee = stage.assigned_to == str(u.id)
+        if not is_assignee:
+            is_assignee = (await db.execute(
+                select(StageAssignee.id).where(
+                    StageAssignee.stage_id == stage_id, StageAssignee.user_id == u.id)
+            )).scalar_one_or_none() is not None
+        if not is_assignee:
+            raise HTTPException(403, "Нет прав на проверку этого этапа")
+
+    result = (body.result or "").lower()
+    comment = (body.comment or "").strip()
+    target_type = stage.rework_target_type or QC_GATES.get(stage.stage_type)
+
+    if result == "pass" and not body.needs_components:
+        # Годен → закрываем гейт и двигаем маршрут дальше
+        stage_assignees = (await db.execute(
+            select(StageAssignee).where(StageAssignee.stage_id == stage_id)
+        )).scalars().all()
+        await db.execute(
+            update(OrderStage).where(OrderStage.id == stage_id).values(
+                status="done", completed_at=func.now(),
+                comment=comment or stage.comment,
+                result_photo=body.photo_url or stage.result_photo, updated_at=func.now())
+        )
+        stage.status = "done"
+        await _advance_workflow_after_stage(db, order, stage, stage_assignees)
+        await _audit(db, u, "stage", stage_id, "inspect_pass",
+                     new_value="pass",
+                     details=json.dumps({"order_id": order_id, "comment": comment}, ensure_ascii=False))
+        await _fire_webhooks(db, "stage.inspect_pass", {
+            "order_id": order_id, "stage_id": stage_id, "stage_type": stage.stage_type})
+        await db.commit()
+        return {"result": "pass", "stage_id": stage_id, "rework_stage_id": None}
+
+    # result == "fail" (или нужны компоненты) → возврат на доработку
+    if result not in ("pass", "fail"):
+        raise HTTPException(400, "result должен быть 'pass' или 'fail'")
+
+    # Выбор этапа-источника для возврата брака
+    target = None
+    if body.rework_stage_id:
+        target = (await db.execute(text("""
+            SELECT id FROM order_stages WHERE id=:sid AND order_id=:oid AND id != :gate
+        """), {"sid": body.rework_stage_id, "oid": order_id, "gate": stage_id})).scalar_one_or_none()
+    if not target and target_type:
+        target = (await db.execute(text("""
+            SELECT id FROM order_stages
+            WHERE order_id=:oid AND stage_type=:st AND id != :gate AND sort_order < :gs
+            ORDER BY (status='done') DESC, sort_order DESC LIMIT 1
+        """), {"oid": order_id, "st": target_type, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
+    if not target:
+        target = (await db.execute(text("""
+            SELECT id FROM order_stages
+            WHERE order_id=:oid AND id != :gate AND sort_order < :gs
+            ORDER BY sort_order DESC LIMIT 1
+        """), {"oid": order_id, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
+
+    if target:
+        await db.execute(text("""
+            UPDATE order_stages SET status='pending', started_at=NULL,
+                completed_at=NULL, updated_at=NOW() WHERE id=:sid
+        """), {"sid": target})
+        await db.execute(text("""
+            UPDATE stage_assignees SET status='pending', started_at=NULL,
+                completed_at=NULL, updated_at=NOW() WHERE stage_id=:sid
+        """), {"sid": target})
+
+    # Блокируем сам гейт до повторной сдачи источника
+    await db.execute(text("""
+        UPDATE order_stages SET status='blocked', started_at=NULL,
+            completed_at=NULL, result_photo=:p, updated_at=NOW() WHERE id=:gate
+    """), {"gate": stage_id, "p": body.photo_url or stage.result_photo})
+
+    # Статус заказа
+    new_status = "Ожидает компонентов" if body.needs_components else "Доработка"
+    await db.execute(text("""
+        UPDATE orders SET status=:s, otk_comment=:c,
+            otk_attempts = COALESCE(otk_attempts,0) + CASE WHEN :is_otk THEN 1 ELSE 0 END,
+            updated_at=NOW() WHERE id=:oid
+    """), {"s": new_status, "c": comment, "oid": order_id, "is_otk": stage.stage_type == "otk"})
+
+    # Уведомления исполнителям источника + руководителям
+    notify_ids = set()
+    if target:
+        a = (await db.execute(text("SELECT assigned_to FROM order_stages WHERE id=:sid"),
+                              {"sid": target})).scalar()
+        if a:
+            notify_ids.add(str(a))
+        sa = (await db.execute(text(
+            "SELECT DISTINCT user_id FROM stage_assignees WHERE stage_id=:sid AND user_id IS NOT NULL"
+        ), {"sid": target})).scalars().all()
+        notify_ids |= {str(i) for i in sa}
+    gate_label = CANONICAL_STAGE_LABELS.get(stage.stage_type, stage.stage_type)
+    msg = f"{(order.product_name if order else '')}: брак на «{gate_label}». {comment}".strip()
+    for uid in notify_ids:
+        await notify_user(db, uid, f"Заказ №{order_id}: возврат на доработку", msg,
+                          link="/my-tasks", type_="warning")
+    await notify_managers(db, f"{gate_label}: заказ №{order_id} — брак", msg,
+                          link=f"/orders/{order_id}", type_="warning")
+    if body.needs_components:
+        await notify_managers(db, f"Заказ №{order_id}: требуются доп. компоненты",
+                              msg, link=f"/orders/{order_id}", type_="warning")
+
+    await _audit(db, u, "stage", stage_id, "inspect_fail",
+                 new_value="fail",
+                 details=json.dumps({"order_id": order_id, "rework_stage_id": target,
+                                     "needs_components": bool(body.needs_components),
+                                     "comment": comment}, ensure_ascii=False))
+    await _fire_webhooks(db, "stage.inspect_fail", {
+        "order_id": order_id, "stage_id": stage_id, "stage_type": stage.stage_type,
+        "rework_stage_id": target})
+    await db.commit()
+    return {"result": "fail", "stage_id": stage_id, "rework_stage_id": target,
+            "order_status": new_status}
 
 
 # ── Маршрутизатор этапов ──────────────────────────────────────────────────────

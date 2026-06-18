@@ -39,6 +39,7 @@ ROUTES = {
     "/api/custom-fields":       (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
     "/api/route-templates":     (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
     "/api/orders":              (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_CRITICAL),
+    "/api/chat":                (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
     "/api/my-stages":            (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
     "/api/my-orders":            (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),
     "/api/production":           (settings.BUSINESS_LOGIC_SERVICE_URL, settings.RATE_LIMIT_GENERAL),

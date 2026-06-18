@@ -51,6 +51,11 @@ const NAV: NavItem[] = [
     label: "Мои заказы",
     icon: <Icon d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />,
   },
+  {
+    href: "/chat",
+    label: "Чат",
+    icon: <Icon d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.6 7.6 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />,
+  },
   // ── Склад ────────────────────────────────────────────────────────────────
   {
     href: "/warehouse",
@@ -197,6 +202,8 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
   const { isDark, setMode } = useTheme();
 
   const visible = NAV.filter((item) => {
+    // Чат доступен всем авторизованным независимо от роли
+    if (item.href === "/chat") return true;
     if (item.role && user?.role !== item.role) return false;
     // Производственные роли видят Главную, Мои заказы и страницу своего отдела
     if (isProductionRole) {
@@ -221,6 +228,7 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
     .toUpperCase();
 
   const [taskCount, setTaskCount] = useState(0);
+  const [chatUnread, setChatUnread] = useState(0);
 
   useEffect(() => {
     if (!user || !(PRODUCTION_ROLES as readonly string[]).includes(user.role)) return;
@@ -232,6 +240,17 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
         setTaskCount(count);
       }).catch(console.error);
     });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    let alive = true;
+    const tick = () => import("../../lib/api").then(({ api }) =>
+      api.getChatUnread().then(r => { if (alive) setChatUnread(r.unread); }).catch(() => {})
+    );
+    tick();
+    const t = setInterval(tick, 20000);
+    return () => { alive = false; clearInterval(t); };
   }, [user]);
 
   return (
@@ -364,6 +383,16 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
                   color: "#fff", fontSize: 10, fontWeight: 700, padding: "0 5px",
                   boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
                 }}>{taskCount}</span>
+              )}
+              {item.href === "/chat" && chatUnread > 0 && (
+                <span className="glow-pulse" style={{
+                  marginLeft: "auto",
+                  minWidth: 19, height: 19,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: 10, background: active ? "rgba(255,255,255,0.25)" : "linear-gradient(135deg, #6366f1, #818cf8)",
+                  color: "#fff", fontSize: 10, fontWeight: 700, padding: "0 5px",
+                  boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
+                }}>{chatUnread > 99 ? "99+" : chatUnread}</span>
               )}
             </Link>
             </React.Fragment>

@@ -24,6 +24,10 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE recipe_stages ADD COLUMN IF NOT EXISTS depends_on_previous INTEGER DEFAULT 1"))
         await conn.execute(text("ALTER TABLE recipe_stages ADD COLUMN IF NOT EXISTS transfer_qty INTEGER DEFAULT 0"))
         await conn.execute(text("ALTER TABLE recipe_product_order ADD COLUMN IF NOT EXISTS assigned_role VARCHAR(50)"))
+        # Признаки канонического маршрута по ТЗ на изделии
+        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_smd BOOLEAN DEFAULT true"))
+        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS is_receiver BOOLEAN DEFAULT false"))
+        await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_assembly BOOLEAN DEFAULT true"))
         # Авто-импорт существующих изделий в каталог из recipe_product_order
         await conn.execute(text("""
             INSERT INTO product_catalog (name)

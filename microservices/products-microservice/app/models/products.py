@@ -14,6 +14,10 @@ class ProductCatalog(Base):
     description = Column(Text)                  # описание
     unit        = Column(String(50), default="шт")  # единица измерения
     is_active   = Column(Boolean, default=True)
+    # Признаки канонического маршрута по ТЗ (определяют ветвление этапов заказа):
+    needs_smd      = Column(Boolean, default=True)   # нужен блок СМД (склад СМД→монтаж→AOI→гравировка)
+    is_receiver    = Column(Boolean, default=False)  # приёмник: после СМД — прошивка, без сборки РЭА
+    needs_assembly = Column(Boolean, default=True)   # нужна сборка РЭА (склад РЭА→выдача→сборка→ОТК)
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

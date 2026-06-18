@@ -124,6 +124,9 @@ export default function OrdersPage() {
   const [error, setError] = useState("");
 
   const [extraStages, setExtraStages] = useState<StageRow[]>([]);
+  // Канонический маршрут по ТЗ (12 этапов)
+  const [useCanonical, setUseCanonical] = useState(false);
+  const [canonFlags, setCanonFlags] = useState({ needs_smd: true, is_receiver: false, needs_assembly: true });
 
   // Excel импорт
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -189,6 +192,15 @@ export default function OrdersPage() {
       setProductStages([]); setStageAssignments({}); setProductRole(null); setSkippedStages(new Set()); return;
     }
     setLoadingStages(true);
+    // Префилл признаков канонического маршрута из каталога изделия
+    api.getCatalog({ q: form.product_name }).then(items => {
+      const it = items.find(i => i.name === form.product_name);
+      if (it) setCanonFlags({
+        needs_smd: it.needs_smd !== false,
+        is_receiver: it.is_receiver === true,
+        needs_assembly: it.needs_assembly !== false,
+      });
+    }).catch(() => {});
     api.getProductStages(form.product_name)
       .then((data: unknown) => {
         if (Array.isArray(data)) {
@@ -237,6 +249,12 @@ export default function OrdersPage() {
       if (!payload.assigned_operator_id) delete payload.assigned_operator_id;
       if (!payload.stage_assignments) delete payload.stage_assignments;
       if (!payload.skipped_stage_ids) delete payload.skipped_stage_ids;
+      if (useCanonical) {
+        payload.use_canonical_route = true;
+        payload.needs_smd = canonFlags.needs_smd;
+        payload.is_receiver = canonFlags.is_receiver;
+        payload.needs_assembly = canonFlags.needs_assembly;
+      }
       if (extraStages.length > 0) {
         (payload as Record<string, unknown>).extra_stages = extraStages.map(s => ({
           stage_type: s.stage_type,
@@ -252,6 +270,7 @@ export default function OrdersPage() {
       setShowCreate(false);
       setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
       setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
+      setUseCanonical(false); setCanonFlags({ needs_smd: true, is_receiver: false, needs_assembly: true });
       load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
     setSaving(false);
@@ -874,8 +893,38 @@ export default function OrdersPage() {
             <textarea value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} rows={2} />
           </div>
 
+          {/* Канонический маршрут по ТЗ (12 этапов) */}
+          <div style={{ padding: "12px 14px", borderRadius: 10, background: useCanonical ? "#6366f110" : "var(--bg-secondary)", border: `1px solid ${useCanonical ? "#6366f155" : "var(--border)"}` }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={useCanonical} onChange={e => setUseCanonical(e.target.checked)} />
+              <span style={{ fontWeight: 600, fontSize: 13.5 }}>Маршрут по ТЗ (12 этапов)</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>распределение → СМД → AOI → … → отгрузка</span>
+            </label>
+            {useCanonical && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={canonFlags.needs_smd} onChange={e => setCanonFlags(f => ({ ...f, needs_smd: e.target.checked }))} />
+                    Блок СМД (монтаж + AOI + гравировка)
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, is_receiver: e.target.checked }))} />
+                    Приёмник (после СМД — прошивка)
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", opacity: canonFlags.is_receiver ? 0.5 : 1 }}>
+                    <input type="checkbox" checked={canonFlags.needs_assembly} disabled={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, needs_assembly: e.target.checked }))} />
+                    Сборка РЭА (склад РЭА → выдача → сборка → ОТК)
+                  </label>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
+                  Этапы построятся автоматически по признакам изделия. Гейты AOI и ОТК возвращают брак на предыдущий этап.
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Этапы маршрута и назначение исполнителя */}
-          {form.product_name && productNames.includes(form.product_name) && (
+          {!useCanonical && form.product_name && productNames.includes(form.product_name) && (
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>

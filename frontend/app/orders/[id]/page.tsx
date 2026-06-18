@@ -105,6 +105,12 @@ export default function OrderDetailPage() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeSaving, setRouteSaving] = useState(false);
 
+  // Гейты контроля качества (AOI / ОТК) канонического маршрута
+  const [gateModal, setGateModal] = useState<OrderStage | null>(null);
+  const [gateComment, setGateComment] = useState("");
+  const [gateNeedsComp, setGateNeedsComp] = useState(false);
+  const [gateSaving, setGateSaving] = useState(false);
+
   useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
 
   useEffect(() => {
@@ -123,8 +129,7 @@ export default function OrderDetailPage() {
   async function loadStages() {
     setStagesFetching(true);
     try {
-      const raw = await api.getOrderStages(id);
-      const s = Array.isArray(raw) ? raw : [];
+      const s = await api.getOrderStages(id);
       setStages(s);
       // Load assignees for all stages in parallel
       const entries = await Promise.all(
@@ -264,6 +269,37 @@ export default function OrderDetailPage() {
         openRoute(stage);
       }
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
+
+  // ── Гейты контроля качества (AOI / ОТК) ─────────────────────────────
+  const GATE_LABEL: Record<string, string> = { aoi: "AOI", otk: "ОТК" };
+  async function inspectPass(stage: OrderStage) {
+    if (!confirm(`Принять «${stage.stage_name || stage.stage_type}» как годный?`)) return;
+    try {
+      await api.inspectStage(id, stage.id, { result: "pass" });
+      await loadStages();
+      api.getOrder(id).then(setOrder).catch(() => {});
+      toast.success("Этап принят, маршрут продолжен");
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
+  function openGateFail(stage: OrderStage) {
+    setGateModal(stage); setGateComment(""); setGateNeedsComp(false);
+  }
+  async function submitGateFail() {
+    if (!gateModal) return;
+    setGateSaving(true);
+    try {
+      await api.inspectStage(id, gateModal.id, {
+        result: "fail",
+        comment: gateComment.trim() || undefined,
+        needs_components: gateModal.stage_type === "otk" ? gateNeedsComp : undefined,
+      });
+      setGateModal(null);
+      await loadStages();
+      api.getOrder(id).then(setOrder).catch(() => {});
+      toast.warning("Брак: заказ возвращён на доработку");
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+    finally { setGateSaving(false); }
   }
 
   async function openRoute(stage: OrderStage) {
@@ -407,6 +443,15 @@ export default function OrderDetailPage() {
     try { setStages(await api.applyRouteTemplate(id, tid)); toast.success("Этапы добавлены"); await loadStages(); }
     catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
   }
+  async function genCanonical() {
+    if (stages.length > 0 && !confirm("Заменить текущие этапы каноническим маршрутом по ТЗ (12 этапов)? Признаки изделия берутся из каталога.")) return;
+    try {
+      const r = await api.generateCanonicalStages(id, { replace: true });
+      await loadStages();
+      api.getOrder(id).then(setOrder).catch(() => {});
+      toast.success(`Маршрут по ТЗ построен: ${r.created} этап(ов)`);
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
   async function loadTemplates() {
     try { setRouteTemplates(await api.getRouteTemplates()); } catch {}
   }
@@ -438,7 +483,8 @@ export default function OrderDetailPage() {
               ОТК-возвраты: {order.otk_attempts}
             </span>
           )}
-          <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => printRouteSheet({
+          <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => router.push(`/chat?order=${order.id}`)}>💬 Чат заказа</Button>
+          <Button variant="secondary" size="sm" onClick={() => printRouteSheet({
             orderId: order.id,
             productName: order.product_name,
             plannedQty: order.planned_qty,
@@ -602,6 +648,7 @@ export default function OrderDetailPage() {
                 {stages.length > 0 && (
                   <Button size="sm" variant="ghost" onClick={saveAsTemplate}>★ Сохранить как шаблон</Button>
                 )}
+                <Button size="sm" variant="secondary" onClick={genCanonical} title="Построить канонический маршрут по ТЗ (12 этапов)">⚙ Маршрут по ТЗ</Button>
                 <Button size="sm" onClick={() => {
                   setEditStageModal(null);
                   setStageForm({ stage_name: "", stage_type: "assembly", required_role: "", sort_order: String(stages.length), instructions: "", next_stage_id: "", est_minutes: "", result_photo: "", checklist: "" });
@@ -620,9 +667,12 @@ export default function OrderDetailPage() {
                 <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
                   <div style={{ marginBottom: 16 }}>Этапы ещё не созданы</div>
                   {hasPermission("orders.start") && (
-                    <Button size="sm" onClick={async () => {
-                      try { await api.generateOrderStages(id); await loadStages(); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
-                    }}>Сгенерировать этапы</Button>
+                    <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                      <Button size="sm" onClick={async () => {
+                        try { setStages(await api.generateOrderStages(id)); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+                      }}>Сгенерировать из рецептуры</Button>
+                      <Button size="sm" variant="secondary" onClick={genCanonical}>⚙ Маршрут по ТЗ</Button>
+                    </div>
                   )}
                 </div>
               </Card>
@@ -773,6 +823,19 @@ export default function OrderDetailPage() {
                           </div>
                         )}
                         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                          {/* Гейт контроля качества (AOI / ОТК): принять или вернуть брак */}
+                          {(stage.stage_type === "aoi" || stage.stage_type === "otk")
+                            && (stage.status === "pending" || stage.status === "in_progress")
+                            && (hasPermission("otk.view") || user?.role === "admin" || user?.role === "manager" || user?.role === "operator_otk" || isMyStage) && (
+                            <>
+                              <Button size="sm" variant="success" onClick={() => inspectPass(stage)}>
+                                ✓ {GATE_LABEL[stage.stage_type] ?? "Контроль"}: годен
+                              </Button>
+                              <Button size="sm" variant="danger" onClick={() => openGateFail(stage)}>
+                                ✗ Брак
+                              </Button>
+                            </>
+                          )}
                           {/* + Добавить исполнителя */}
                           {isActive && hasPermission("orders.edit") && (
                             <Button size="sm" variant="secondary" onClick={() => openAddAssignee(stage)}>
@@ -1110,6 +1173,32 @@ export default function OrderDetailPage() {
         <div>
           <label>Причина паузы</label>
           <textarea value={pauseReason} onChange={e => setPauseReason(e.target.value)} rows={2} placeholder="Напр.: ожидание компонентов, поломка оборудования..." />
+        </div>
+      </Modal>
+
+      {/* Гейт: возврат брака на доработку */}
+      <Modal
+        open={gateModal !== null}
+        onClose={() => setGateModal(null)}
+        title={`Брак на «${gateModal?.stage_name || (gateModal && GATE_LABEL[gateModal.stage_type]) || ""}»`}
+        footer={<><Button variant="secondary" onClick={() => setGateModal(null)}>Отмена</Button><Button variant="danger" loading={gateSaving} onClick={submitGateFail}>Вернуть на доработку</Button></>}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            {gateModal?.stage_type === "otk"
+              ? "Заказ вернётся в «Сборку РЭА». Опишите причину брака."
+              : "Изделие вернётся на «СМД-монтаж» для переделки, затем снова на AOI."}
+          </div>
+          <div>
+            <label>Причина / описание брака</label>
+            <textarea value={gateComment} onChange={e => setGateComment(e.target.value)} rows={3} placeholder="Напр.: непропай, смещение компонента, неверная полярность..." />
+          </div>
+          {gateModal?.stage_type === "otk" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={gateNeedsComp} onChange={e => setGateNeedsComp(e.target.checked)} />
+              Нужны дополнительные компоненты (заказ → «Ожидает компонентов»)
+            </label>
+          )}
         </div>
       </Modal>
 
