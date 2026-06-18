@@ -42,6 +42,12 @@ const ICONS: Record<ToastKind, string> = {
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const [leaving, setLeaving] = useState<Set<number>>(new Set());
+  // Портал монтируем только после гидрации: и на сервере, и при первом
+  // клиентском рендере значение одинаково (false), поэтому HTML совпадает.
+  // Ветка `typeof window !== "undefined"` давала hydration mismatch → в
+  // прод-сборке это фатальный "client-side exception".
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const remove = useCallback((id: number) => {
     setLeaving((s) => new Set(s).add(id));
@@ -80,7 +86,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <>
       {children}
-      {typeof window !== "undefined" &&
+      {mounted &&
         createPortal(
           <div className="toast-viewport" role="status" aria-live="polite">
             {items.map((t) => (

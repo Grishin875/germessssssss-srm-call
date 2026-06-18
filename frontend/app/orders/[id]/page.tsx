@@ -123,7 +123,8 @@ export default function OrderDetailPage() {
   async function loadStages() {
     setStagesFetching(true);
     try {
-      const s = await api.getOrderStages(id);
+      const raw = await api.getOrderStages(id);
+      const s = Array.isArray(raw) ? raw : [];
       setStages(s);
       // Load assignees for all stages in parallel
       const entries = await Promise.all(
@@ -620,7 +621,7 @@ export default function OrderDetailPage() {
                   <div style={{ marginBottom: 16 }}>Этапы ещё не созданы</div>
                   {hasPermission("orders.start") && (
                     <Button size="sm" onClick={async () => {
-                      try { setStages(await api.generateOrderStages(id)); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+                      try { await api.generateOrderStages(id); await loadStages(); } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
                     }}>Сгенерировать этапы</Button>
                   )}
                 </div>

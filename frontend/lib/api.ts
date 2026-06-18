@@ -61,7 +61,12 @@ export const api = {
     return r;
   },
   async getCurrentUser() {
-    return request<{ user: User }>("/api/auth/me");
+    // /api/auth/me отдаёт объект пользователя «плоско» (без обёртки { user }),
+    // тогда как /api/auth/login — обёрнуто. Нормализуем оба формата, иначе
+    // r.user === undefined → при перезагрузке защищённой страницы сессия не
+    // восстанавливается и происходит редирект на /login.
+    const r = await request<User | { user: User }>("/api/auth/me");
+    return { user: (r && (r as { user?: User }).user) ? (r as { user: User }).user : (r as User) };
   },
   async changePassword(oldPassword: string, newPassword: string) {
     return request("/api/auth/change-password", {

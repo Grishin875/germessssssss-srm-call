@@ -1823,7 +1823,12 @@ async def generate_stages(order_id: int, request: Request):
         created = 1
 
     await db.commit()
-    return {"created": created}
+    # Возвращаем актуальный список этапов (а не {"created": N}), т.к. фронт
+    # делает setStages(результат) — объект ломал stages.map на рендере.
+    rows = (await db.execute(
+        select(OrderStage).where(OrderStage.order_id == order_id).order_by(OrderStage.sort_order, OrderStage.id)
+    )).scalars().all()
+    return [{**_m(s), "components": s.components} for s in rows]
 
 
 @router.patch("/orders/{order_id}/stages/{stage_id}/assign")
