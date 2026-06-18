@@ -1,0 +1,21 @@
+{
+  "name": "Germess — Производство",
+  "short_name": "Germess",
+  "description": "CRM система управления производством",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#3390EC",
+  "lang": "ru",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Заказы", "url": "/orders" },
+    { "name": "Мои задачи", "url": "/my-tasks" },
+    { "name": "ОТК", "url": "/otk" }
+  ]
+}

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Отчет по ежедневному выполнению</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            margin-top: 0;
+        }
+        .filters {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .filter-group label {
+            font-size: 12px;
+            color: #666;
+        }
+        .filter-group input, .filter-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Отчет по ежедневному выполнению производства</h1>
+        
+        <div class="filters">
+            <div class="filter-group">
+                <label>Дата начала:</label>
+                <input type="date" id="start-date">
+            </div>
+            <div class="filter-group">
+                <label>Дата окончания:</label>
+                <input type="date" id="end-date">
+            </div>
+            <div class="filter-group">
+                <label>Линия:</label>
+                <select id="line-filter">
+                    <option value="">Все линии</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Заказ:</label>
+                <input type="number" id="order-filter" placeholder="ID заказа">
+            </div>
+            <div class="filter-group" style="justify-content: flex-end;">
+                <label>&nbsp;</label>
+                <button onclick="loadReport()">Загрузить отчет</button>
+            </div>
+        </div>
+        
+        <div id="report-content">
+            <div class="loading">Выберите период и нажмите "Загрузить отчет"</div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE_URL = window.location.origin;
+        let authToken = localStorage.getItem('crm_token');
+        
+        // Устанавливаем даты по умолчанию (последние 7 дней)
+        const today = new Date();
+        const weekAgo = new Date(today);
+        weekAgo.setDate(today.getDate() - 7);
+        
+        document.getElementById('start-date').value = weekAgo.toISOString().split('T')[0];
+        document.getElementById('end-date').value = today.toISOString().split('T')[0];
+        
+        async function loadReport() {
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            const lineId = document.getElementById('line-filter').value;
+            const orderId = document.getElementById('order-filter').value;
+            
+            if (!startDate || !endDate) {
+                alert('Выберите период');
+                return;
+            }
+            
+            const params = new URLSearchParams();
+            params.append('start_date', startDate);
+            params.append('end_date', endDate);
+            if (lineId) params.append('line_id', lineId);
+            if (orderId) params.append('order_id', orderId);
+            
+            document.getElementById('report-content').innerHTML = '<div class="loading">Загрузка...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/production/daily-progress-report?${params}`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Ошибка загрузки отчета');
+                }
+                
+                const data = await response.json();
+                
+                if (data.length === 0) {
+                    document.getElementById('report-content').innerHTML = '<div class="loading">Нет данных за выбранный период</div>';
+                    return;
+                }
+                
+                // Группируем по дате и линии
+                const grouped = {};
+                data.forEach(row => {
+                    const key = `${row.production_date}_${row.line_id || 'no_line'}`;
+                    if (!grouped[key]) {
+                        grouped[key] = {
+                            date: row.production_date,
+                            line_name: row.line_name || 'Без линии',
+                            line_number: row.line_number,
+                            batches: [],
+                            total_qty: 0
+                        };
+                    }
+                    grouped[key].batches.push(row);
+                    grouped[key].total_qty += parseInt(row.total_qty_produced || 0);
+                });
+                
+                let html = '<table><thead><tr><th>Дата</th><th>Линия</th><th>Партия</th><th>Изделие</th><th>Заказ</th><th>Выполнено</th></tr></thead><tbody>';
+                
+                Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(group => {
+                    group.batches.forEach((batch, idx) => {
+                        html += `<tr>
+                            ${idx === 0 ? `<td rowspan="${group.batches.length}">${new Date(group.date).toLocaleDateString('ru-RU')}</td>
+                            <td rowspan="${group.batches.length}">${group.line_name}</td>` : ''}
+                            <td>${batch.batch_id}</td>
+                            <td>${batch.product_name}</td>
+                            <td>${batch.order_id_num ? `#${batch.order_id_num}` : '-'}</td>
+                            <td style="text-align: right; font-weight: 600;">${batch.total_qty_produced} шт</td>
+                        </tr>`;
+                    });
+                });
+                
+                html += '</tbody></table>';
+                
+                // Итоговая статистика
+                const totalQty = Object.values(grouped).reduce((sum, g) => sum + g.total_qty, 0);
+                html += `<div style="margin-top: 20px; padding: 16px; background: #f8f9fa; border-radius: 4px;">
+                    <strong>Итого за период:</strong> ${totalQty} шт
+                </div>`;
+                
+                document.getElementById('report-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('report-content').innerHTML = `<div class="loading" style="color: red;">Ошибка: ${error.message}</div>`;
+            }
+        }
+        
+        // Загружаем линии при загрузке страницы
+        async function loadLines() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/smd/lines?active_only=true`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const lines = await response.json();
+                    const select = document.getElementById('line-filter');
+                    lines.forEach(line => {
+                        const option = document.createElement('option');
+                        option.value = line.id;
+                        option.textContent = line.line_name || `Линия ${line.line_number}`;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки линий:', error);
+            }
+        }
+        
+        loadLines();
+    </script>
+</body>
+</html>

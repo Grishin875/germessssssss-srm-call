@@ -1,0 +1,768 @@
+@import url("https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700;800&family=Golos+Text:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+
+:root {
+  /* Типографика: Unbounded — фирменный дисплейный, Golos Text — текстовый */
+  --font-display: "Unbounded", "Golos Text", -apple-system, sans-serif;
+  --font-body: "Golos Text", "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --bg: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --text: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --primary-light: #eef2ff;
+  --primary-text: #4338ca;
+  --success: #10b981;
+  --success-light: #ecfdf5;
+  --danger: #ef4444;
+  --danger-light: #fef2f2;
+  --warning: #f59e0b;
+  --warning-light: #fffbeb;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04);
+  --shadow-md: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+  --sidebar-bg: #18181f;
+  --sidebar-hover: rgba(255,255,255,0.06);
+  --sidebar-active: rgba(99,102,241,0.18);
+  --sidebar-active-border: #6366f1;
+  --sidebar-text: rgba(255,255,255,0.5);
+  --sidebar-text-active: #ffffff;
+  --sidebar-border: rgba(255,255,255,0.07);
+  --radius: 10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+
+  /* Liquid glass surfaces */
+  --glass-bg: rgba(255,255,255,0.72);
+  --glass-border: rgba(255,255,255,0.9);
+  --glass-blur: 18px;
+  --glass-highlight: rgba(255,255,255,0.6);
+  --glass-shadow: 0 8px 32px -8px rgba(15,23,42,0.18);
+  /* Фоновые световые пятна (за контентом) */
+  --glow-1: rgba(99,102,241,0.10);
+  --glow-2: rgba(168,85,247,0.08);
+  --glow-3: rgba(14,165,233,0.07);
+
+  /* Input / field sizing */
+  --field-height: 36px;
+  --field-height-sm: 30px;
+  --field-height-lg: 42px;
+  --field-px: 12px;
+  --field-radius: 8px;
+  --field-border: 1.5px solid var(--border);
+  --field-bg: var(--bg-secondary);
+  --field-focus-shadow: 0 0 0 3px rgba(99,102,241,0.14);
+}
+
+[data-theme="dark"] {
+  --bg: #07080f;
+  --bg-secondary: #11131c;
+  --bg-tertiary: #1a1d29;
+  --text: #f4f5fb;
+  --text-secondary: #a3abc2;
+  --text-muted: #6b7390;
+  --border: #262a39;
+  --border-light: #1a1d29;
+  --primary-light: rgba(99,102,241,0.16);
+  --primary-text: #a5b4fc;
+  --success-light: rgba(16,185,129,0.12);
+  --danger-light: rgba(239,68,68,0.12);
+  --warning-light: rgba(245,158,11,0.12);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.45);
+  --shadow: 0 4px 12px -2px rgba(0,0,0,0.5);
+  --shadow-md: 0 12px 32px -8px rgba(0,0,0,0.6);
+  --shadow-lg: 0 24px 50px -12px rgba(0,0,0,0.7);
+  --field-bg: #1a1d29;
+
+  /* Liquid glass — тёмное стекло со светящейся кромкой */
+  --glass-bg: rgba(26,29,41,0.55);
+  --glass-border: rgba(255,255,255,0.08);
+  --glass-highlight: rgba(255,255,255,0.14);
+  --glass-shadow: 0 8px 32px -8px rgba(0,0,0,0.6);
+  --glow-1: rgba(99,102,241,0.18);
+  --glow-2: rgba(168,85,247,0.14);
+  --glow-3: rgba(14,165,233,0.12);
+
+  --sidebar-bg: #0b0c14;
+  --sidebar-text: rgba(255,255,255,0.45);
+  --sidebar-border: rgba(255,255,255,0.06);
+}
+
+/* ─── Reset ──────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: -0.004em;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+
+/* Числа в таблицах и карточках — табличные цифры, ровные колонки */
+table, .tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Видимый фокус с клавиатуры — доступность */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Живые световые пятна — медленно дрейфующая «аврора» за контентом */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+body::before {
+  background:
+    radial-gradient(640px 460px at 12% 6%, var(--glow-1), transparent 60%),
+    radial-gradient(700px 520px at 96% 4%, var(--glow-2), transparent 58%),
+    radial-gradient(560px 540px at 48% 104%, var(--glow-3), transparent 60%);
+  animation: auroraA 26s ease-in-out infinite;
+}
+body::after {
+  background:
+    radial-gradient(520px 420px at 80% 30%, var(--glow-2), transparent 60%),
+    radial-gradient(560px 480px at 20% 70%, var(--glow-3), transparent 58%);
+  animation: auroraB 34s ease-in-out infinite;
+  opacity: 0.8;
+}
+
+@keyframes auroraA {
+  0%   { transform: translate(0,0) scale(1)    rotate(0deg); }
+  33%  { transform: translate(3%,-2.5%) scale(1.08) rotate(2deg); }
+  66%  { transform: translate(-2.5%,3%) scale(0.95) rotate(-2deg); }
+  100% { transform: translate(0,0) scale(1)    rotate(0deg); }
+}
+@keyframes auroraB {
+  0%   { transform: translate(0,0) scale(1.05); }
+  50%  { transform: translate(-4%,3%) scale(0.92); }
+  100% { transform: translate(0,0) scale(1.05); }
+}
+
+/* Контент над свечением */
+#__next, main, .ac { position: relative; z-index: 1; }
+
+/* ─── Liquid glass utilities ─────────────────── */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+}
+
+/* ─── Scrollbar ──────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ─── Global field styles ────────────────────── */
+/*
+  All input/select/textarea get consistent height, padding, border, radius.
+  Checkboxes and radios are excluded.
+*/
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--field-bg);
+  border: var(--field-border);
+  border-radius: var(--field-radius);
+  padding: 0 var(--field-px);
+  height: var(--field-height);
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+textarea {
+  height: auto;
+  padding: 10px var(--field-px);
+  resize: vertical;
+  min-height: 80px;
+}
+
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):focus,
+select:focus,
+textarea:focus {
+  border-color: var(--primary);
+  box-shadow: var(--field-focus-shadow);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* ─── Кастомные чекбоксы и радио ──────────────────
+   Единый стиль вместо браузерных дефолтных. Размер берётся
+   из inline width/height, если задан, иначе 16px. */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid var(--border);
+  background: var(--field-bg, #fff);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  vertical-align: middle;
+  display: inline-block;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input[type="checkbox"] { border-radius: 5px; }
+input[type="radio"]    { border-radius: 50%; }
+
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+/* Галочка */
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 47%;
+  width: 30%;
+  height: 56%;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -52%) rotate(45deg);
+}
+/* Точка радио */
+input[type="radio"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42%;
+  height: 42%;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
+}
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Label utility */
+label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* ─── Animations ─────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes slideInModal {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.animate-fadeIn { animation: fadeIn 0.18s ease forwards; }
+.animate-modal  { animation: slideInModal 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+.animate-pulse-dot { animation: pulse 2s ease-in-out infinite; }
+.animate-slideUp { animation: slideUp 0.25s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
+/* Stagger-раскрытие списков: задаётся через style={{ ['--i']: idx }} */
+.stagger-item { animation: slideUp 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+
+/* ── Toasts ─────────────────────────────────────────────────────────────── */
+.toast-viewport {
+  position: fixed; top: 16px; right: 16px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 10px;
+  max-width: min(380px, calc(100vw - 32px)); pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: var(--radius-lg);
+  background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow);
+  color: var(--text); font-size: 14px; font-weight: 500;
+  animation: toastIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  position: relative; overflow: hidden;
+}
+.toast.leaving { animation: toastOut 0.26s ease forwards; }
+.toast::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 4px 0 0 4px; }
+.toast.success::before { background: var(--success); }
+.toast.error::before   { background: var(--danger); }
+.toast.warning::before { background: var(--warning); }
+.toast.info::before    { background: var(--primary); }
+.toast-icon { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; font-size: 14px; }
+.toast-body { flex: 1; min-width: 0; line-height: 1.35; }
+.toast-close { flex: 0 0 auto; cursor: pointer; border: none; background: transparent; color: var(--text-muted); font-size: 16px; line-height: 1; padding: 2px; border-radius: 6px; transition: color 0.15s, background 0.15s; }
+.toast-close:hover { color: var(--text); background: var(--bg-tertiary); }
+.toast-progress { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--primary); opacity: 0.5; animation: toastProgress linear forwards; }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(24px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(24px) scale(0.98); }
+}
+@keyframes toastProgress { from { width: 100%; } to { width: 0%; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast.leaving, .stagger-item { animation: none; }
+  .toast-progress { animation: none; }
+}
+
+/* Плавная смена темы */
+body, .ac, aside {
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Подъём карточек при наведении */
+.hover-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+/* Карточки (Card / StatCard) — объём, отклик и блик-прожектор за курсором */
+.card-elev {
+  position: relative;
+  transition: transform 0.22s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s ease, border-color 0.22s ease;
+}
+.card-elev:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--glass-highlight), 0 12px 40px -12px var(--glow-1);
+  border-color: rgba(99,102,241,0.35);
+}
+/* Прожектор, следящий за курсором (координаты задаёт JS через --mx/--my) */
+.card-elev::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 0%), rgba(255,255,255,0.10), transparent 42%);
+}
+.card-elev:hover::after { opacity: 1; }
+
+/* Появление контента страницы — каскадом (stagger) */
+.ac > * {
+  animation: slideUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.ac > *:nth-child(1) { animation-delay: 0.02s; }
+.ac > *:nth-child(2) { animation-delay: 0.08s; }
+.ac > *:nth-child(3) { animation-delay: 0.14s; }
+.ac > *:nth-child(4) { animation-delay: 0.20s; }
+.ac > *:nth-child(5) { animation-delay: 0.26s; }
+.ac > *:nth-child(6) { animation-delay: 0.32s; }
+.ac > *:nth-child(n+7) { animation-delay: 0.38s; }
+
+/* Шиммер-блик, пробегающий по акцентным поверхностям */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.18) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: shimmer 2.5s linear infinite;
+}
+
+/* Анимированный градиент hero-хедера — медленно «дышит» */
+@keyframes gradientMove {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+.hero-aurora {
+  background-size: 200% 200% !important;
+  animation: gradientMove 14s ease infinite;
+}
+
+/* Пульсирующая точка «онлайн» с ореолом */
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74,222,128,0.6); }
+  70%  { box-shadow: 0 0 0 7px rgba(74,222,128,0); }
+  100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+}
+.live-dot { animation: livePulse 2s ease-out infinite; }
+
+/* Мягкое свечение-дыхание для акцентных кнопок/бейджей */
+@keyframes glowPulse {
+  0%, 100% { filter: brightness(1); }
+  50%      { filter: brightness(1.12); }
+}
+.glow-pulse { animation: glowPulse 3s ease-in-out infinite; }
+
+/* Уважение к prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  body::before, body::after { animation: none; }
+  .ac > * { animation: none; }
+  .card-elev { transition: none; }
+}
+
+/* Сайдбар — стеклянная глубина со свечением */
+aside {
+  background:
+    radial-gradient(420px 300px at 0% 0%, rgba(99,102,241,0.12), transparent 60%),
+    radial-gradient(380px 360px at 10% 100%, rgba(139,92,246,0.10), transparent 60%),
+    var(--sidebar-bg) !important;
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: inset -1px 0 0 var(--sidebar-border), 10px 0 40px -20px rgba(0, 0, 0, 0.7);
+}
+/* Тонкая светящаяся вертикальная кромка справа */
+aside::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; bottom: 0; width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(99,102,241,0.4) 30%, rgba(139,92,246,0.3) 70%, transparent);
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════
+   App content zone (.ac)
+   Overrides hardcoded Tailwind gray/white classes
+   so all 15 pages look correct without editing them
+   ═══════════════════════════════════════════════ */
+
+/* ── Text colors ──────────────────────────────── */
+.ac .text-gray-900, .ac .dark\:text-white,
+.ac .dark\:text-gray-100 { color: var(--text) !important; }
+
+.ac .text-gray-700, .ac .text-gray-600,
+.ac .dark\:text-gray-300 { color: var(--text-secondary) !important; }
+
+.ac .text-gray-500, .ac .text-gray-400,
+.ac .dark\:text-gray-400 { color: var(--text-muted) !important; }
+
+/* ── Backgrounds ──────────────────────────────── */
+.ac .bg-white,
+.ac .dark\:bg-gray-800  { background-color: var(--bg-secondary) !important; }
+
+.ac .bg-gray-50,
+.ac .dark\:bg-gray-700\/50,
+.ac .dark\:bg-gray-700\/30 { background-color: var(--bg-tertiary) !important; }
+
+.ac .hover\:bg-gray-50:hover,
+.ac .dark\:hover\:bg-gray-700\/30:hover { background-color: var(--bg-tertiary) !important; }
+
+/* ── Borders ──────────────────────────────────── */
+.ac .border-gray-50,
+.ac .border-gray-100,
+.ac .dark\:border-gray-700\/50,
+.ac .dark\:border-gray-700   { border-color: var(--border-light) !important; }
+
+.ac .border-gray-200,
+.ac .border-gray-300,
+.ac .dark\:border-gray-600,
+.ac .dark\:border-gray-700   { border-color: var(--border) !important; }
+
+/* ── Input/select focus ring (override Tailwind ring) */
+.ac .focus\:ring-blue-500:focus,
+.ac .focus\:ring-2:focus     {
+  border-color: var(--primary) !important;
+  box-shadow: var(--field-focus-shadow) !important;
+  outline: none !important;
+}
+.ac .focus\:outline-none:focus { outline: none !important; }
+
+/* ── Input/select bg inside modals and cards ──── */
+.ac .dark\:bg-gray-700,
+.ac .dark\:bg-gray-700 input,
+.ac .dark\:bg-gray-700 select { background-color: var(--field-bg) !important; }
+
+/* ── Page titles ──────────────────────────────── */
+.ac h1 {
+  font-family: var(--font-display) !important;
+  font-size: 21px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text) !important;
+  line-height: 1.25 !important;
+}
+
+/* ── Tables ───────────────────────────────────── */
+.ac table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.ac thead tr {
+  border-bottom: 1px solid var(--border) !important;
+  background: transparent !important;
+}
+
+.ac thead th {
+  padding: 10px 14px !important;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  color: var(--text-muted) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.07em !important;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Remove double border from Tailwind border-b */
+.ac thead tr th.border-b { border-bottom: none !important; }
+
+.ac tbody tr {
+  border-bottom: 1px solid var(--border-light) !important;
+  transition: background 0.1s, box-shadow 0.1s;
+}
+.ac tbody tr:last-child { border-bottom: none !important; }
+.ac tbody tr:hover {
+  background-color: var(--bg-tertiary) !important;
+  box-shadow: inset 2.5px 0 0 var(--primary);
+}
+
+.ac tbody td {
+  padding: 11px 14px !important;
+  font-size: 13.5px;
+  color: var(--text) !important;
+  vertical-align: middle;
+}
+
+/* Font-mono ID cells */
+.ac tbody td.font-mono {
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+}
+
+/* ── Loading / empty states ───────────────────── */
+.ac .text-center.py-12 {
+  padding-top: 48px !important;
+  padding-bottom: 48px !important;
+  font-size: 13.5px;
+  color: var(--text-muted) !important;
+}
+
+/* ── Space-y form labels inside modal ─────────── */
+.ac .space-y-4 label,
+.ac .space-y-3 label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  letter-spacing: 0;
+  text-transform: none !important;
+}
+
+/* ── Filters / toolbar row ────────────────────── */
+.ac .flex.flex-wrap.gap-3 input,
+.ac .flex.flex-wrap.gap-3 select,
+.ac .flex.gap-2 input,
+.ac .flex.gap-2 select,
+.ac .flex.gap-3 input,
+.ac .flex.gap-3 select {
+  height: var(--field-height) !important;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* ── Error messages ───────────────────────────── */
+.ac .text-red-600  { color: var(--danger) !important; }
+.ac .bg-red-50     { background: var(--danger-light) !important; }
+
+/* ── Misc utility overrides ───────────────────── */
+.ac .text-blue-600  { color: var(--primary) !important; }
+.ac .border-blue-500 { border-color: var(--primary) !important; }
+
+/* ═══════════════════════════════════════════════
+   Mobile adaptive (≤768px)
+   ═══════════════════════════════════════════════ */
+
+/* Элементы только для мобильного / только для десктопа */
+.mobile-only { display: none !important; }
+
+/* Контейнер скролла модалки: на десктопе — отступ под сайдбар */
+.modal-scroll { padding-left: 248px; }
+
+@media (max-width: 768px) {
+  .mobile-only  { display: flex !important; }
+  .desktop-only { display: none !important; }
+
+  /* ── Сайдбар → выдвижной ящик ── */
+  aside.sidebar {
+    position: fixed !important;
+    left: 0; top: 0; bottom: 0;
+    height: 100dvh !important;
+    width: 272px !important;
+    z-index: 1200;
+    transform: translateX(-105%);
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  aside.sidebar.sidebar-open {
+    transform: translateX(0);
+    box-shadow: 24px 0 60px -12px rgba(0,0,0,0.55);
+  }
+  .sidebar-backdrop {
+    position: fixed; inset: 0; z-index: 1190;
+    background: rgba(15,23,42,0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  /* ── Контент и шапка ── */
+  .ac { padding: 16px 14px !important; }
+  header.glass { padding: 10px 14px !important; }
+
+  /* ── Таблицы: компактнее + сами скроллятся по горизонтали,
+       даже без обёртки overflow-x-auto ── */
+  .ac table { font-size: 12.5px; display: block; overflow-x: auto; }
+  .ac thead th { padding: 8px 8px !important; font-size: 11px !important; }
+  .ac tbody td { padding: 9px 8px !important; font-size: 12.5px !important; }
+  .ac .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+
+  /* ── Сетки статистики/форм — в одну колонку ──
+       (включая инлайновые style="grid-template-columns: ...") ── */
+  .ac .grid:not(.cal-grid) { grid-template-columns: 1fr !important; }
+  .ac [style*="grid-template-columns"]:not(.cal-grid) { grid-template-columns: 1fr !important; }
+  /* Календарь сохраняет 7 колонок и скроллится по горизонтали */
+  .ac .cal-grid { grid-template-columns: repeat(7, 1fr) !important; }
+
+  /* ── Поля ввода ≥16px, чтобы iOS не зумил при фокусе ── */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select, textarea { font-size: 16px; }
+
+  /* ── Модалки на весь экран без отступа сайдбара ── */
+  .modal-scroll { padding-left: 0 !important; }
+
+  /* ── Заголовки ── */
+  .ac h1 { font-size: 19px !important; }
+
+  /* Кнопки и фильтры переносятся, не вылезая за экран */
+  .ac .flex.flex-wrap { row-gap: 8px; }
+}
+
+/* Совсем узкие экраны */
+@media (max-width: 420px) {
+  .ac { padding: 12px 10px !important; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(30px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Скелетон-загрузка (#187) ── */
+.skeleton {
+  background: linear-gradient(90deg,
+    var(--bg-tertiary) 25%,
+    color-mix(in srgb, var(--bg-tertiary) 60%, var(--bg-secondary)) 37%,
+    var(--bg-tertiary) 63%);
+  background-size: 400% 100%;
+  animation: skeletonShimmer 1.4s ease infinite;
+}
+@keyframes skeletonShimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* ── Плавное парение (пустые состояния #190) ── */
+.float-soft { animation: floatSoft 3.5s ease-in-out infinite; }
+@keyframes floatSoft {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+/* ── Микро-анимации (#189) ── */
+@keyframes popIn {
+  0%   { transform: scale(0.85); opacity: 0; }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.pop-in { animation: popIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+/* Переход контента между страницами/вкладками (#188) */
+.ac.animate-fadeIn { animation: acFade 0.28s ease; }
+@keyframes acFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Доступность: видимый фокус (#196) ── */
+@media (prefers-reduced-motion: no-preference) {
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}

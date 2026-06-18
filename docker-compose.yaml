@@ -1,0 +1,170 @@
+x-common-env: &common-env
+  DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@db:5432/crm_production
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET не задан — добавьте его в .env (см. .env.example)}
+
+x-depends: &depends
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: crm_production
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # ── Microservices ───────────────────────────────────────────────────────────
+  auth:
+    build:
+      context: ./microservices
+      dockerfile: auth-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8001
+    <<: *depends
+    ports:
+      - "8001:8001"
+
+  warehouse:
+    build:
+      context: ./microservices
+      dockerfile: warehouse-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8005
+    <<: *depends
+    ports:
+      - "8005:8005"
+
+  otk:
+    build:
+      context: ./microservices
+      dockerfile: otk-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8002
+    <<: *depends
+    ports:
+      - "8002:8002"
+
+  products:
+    build:
+      context: ./microservices
+      dockerfile: products-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8003
+    <<: *depends
+    ports:
+      - "8003:8003"
+
+  admin:
+    build:
+      context: ./microservices
+      dockerfile: admin-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8004
+    <<: *depends
+    ports:
+      - "8004:8004"
+
+  business-logic:
+    build:
+      context: ./microservices
+      dockerfile: business-logic-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8008
+    <<: *depends
+    ports:
+      - "8008:8008"
+
+  shipment:
+    build:
+      context: ./microservices
+      dockerfile: shipment-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8006
+    <<: *depends
+    ports:
+      - "8006:8006"
+
+  documents:
+    build:
+      context: ./microservices
+      dockerfile: documents-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8007
+    <<: *depends
+    ports:
+      - "8007:8007"
+    volumes:
+      - documents_storage:/app/storage/documents
+
+  integration:
+    build:
+      context: ./microservices
+      dockerfile: shareholder-microservice/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_PORT: 8009
+      ONEC_WEBHOOK_SECRET: ${ONEC_WEBHOOK_SECRET:-}
+      BITRIX_WEBHOOK_SECRET: ${BITRIX_WEBHOOK_SECRET:-}
+    <<: *depends
+    ports:
+      - "8009:8009"
+
+  gateway:
+    build:
+      context: ./microservices
+      dockerfile: api-gateway/Dockerfile
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET не задан — добавьте его в .env (см. .env.example)}
+      AUTH_SERVICE_URL: http://auth:8001
+      WAREHOUSE_SERVICE_URL: http://warehouse:8005
+      OTK_SERVICE_URL: http://otk:8002
+      PRODUCTS_SERVICE_URL: http://products:8003
+      ADMIN_SERVICE_URL: http://admin:8004
+      BUSINESS_LOGIC_SERVICE_URL: http://business-logic:8008
+      SHIPMENT_SERVICE_URL: http://shipment:8006
+      DOCUMENTS_SERVICE_URL: http://documents:8007
+      SHAREHOLDER_SERVICE_URL: http://integration:8009
+    depends_on:
+      - auth
+      - warehouse
+      - otk
+      - products
+      - admin
+      - business-logic
+      - documents
+      - integration
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:
+  documents_storage:

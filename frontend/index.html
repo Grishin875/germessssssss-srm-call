@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="theme-color" content="#3390EC">
+    <title>CRM B3 Производства</title>
+    <!-- Favicon - замените favicon.ico на свой файл -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <!-- Для лучшей поддержки разных устройств можно добавить PNG версии:
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    -->
+    <!-- Кэш-бастинг: обновляйте версию при деплое -->
+    <link rel="stylesheet" href="styles.css?v=20260224d">
+</head>
+<body>
+    <!-- Экран входа -->
+    <div class="login-screen" id="login-screen">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>CRM B3 Производства</h1>
+            </div>
+            <!-- Формы входа/регистрации/восстановления пароля -->
+            <!-- Форма входа -->
+            <form id="login-form" class="login-form">
+                <div class="form-group">
+                    <label for="login-username">Логин:</label>
+                    <input type="text" id="login-username" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Пароль:</label>
+                    <input type="password" id="login-password" required autocomplete="current-password">
+                </div>
+                <div id="login-error" class="error-message" style="display: none;"></div>
+                <button type="submit" class="btn btn-primary btn-block">Войти</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="app-container" id="app-container" style="display: none;">
+        <!-- Toast контейнер для уведомлений -->
+        <div id="toast-container" class="toast-container"></div>
+        
+        <!-- Overlay для мобильного меню -->
+        <div class="mobile-menu-overlay" id="mobile-menu-overlay"></div>
+        
+        <!-- Навигация -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h2>CRM B3</h2>
+                <p>Производство</p>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="#" data-section="dashboard" class="nav-link active"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-dashboard"></use></svg></span> Главная</a></li>
+                <li><a href="#" data-section="warehouse" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-warehouse"></use></svg></span> Склад</a></li>
+                <li><a href="#" data-section="production-stock" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-production-stock"></use></svg></span> Запасы производства</a></li>
+                <li><a href="#" data-section="recipes" class="nav-link" data-role="admin" style="display: none;"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-recipes"></use></svg></span> Рецептура</a></li>
+                <li><a href="#" data-section="orders" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-orders"></use></svg></span> Заказы</a></li>
+                <li><a href="#" data-section="production" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-production"></use></svg></span> Производство</a></li>
+                <li><a href="#" data-section="archive" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-archive"></use></svg></span> Архивы</a></li>
+                <li><a href="#" data-section="shift-schedule" class="nav-link" data-role="admin" style="display: none;"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-calendar"></use></svg></span> График смен</a></li>
+                <li><a href="#" data-section="users" class="nav-link" data-role="admin" style="display: none;"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-users"></use></svg></span> Пользователи</a></li>
+                <li class="nav-separator" data-mode="production" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tg-border);"><a href="/otk" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-otk"></use></svg></span> Перейти в ОТК</a></li>
+                <li class="nav-separator" data-mode="production" style="padding-top: 4px;"><a href="/sc" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-microscope"></use></svg></span> Перейти в СЦ</a></li>
+                <li data-mode="otk" style="display: none;"><a href="#" data-section="otk-pending" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-check"></use></svg></span> На проверке</a></li>
+                <li data-mode="otk" style="display: none;"><a href="#" data-section="otk-ready" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-shipping"></use></svg></span> Готово к отгрузке</a></li>
+                <li data-mode="otk" style="display: none;"><a href="#" data-section="otk-regulations" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-file-text"></use></svg></span> Регламенты</a></li>
+                <li data-mode="otk" style="display: none;"><a href="#" data-section="otk-reports" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-bar-chart"></use></svg></span> Отчёты</a></li>
+                <li data-mode="otk" style="display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tg-border);"><a href="/" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-production"></use></svg></span> Перейти в производство</a></li>
+                <li data-mode="otk" style="display: none; padding-top: 4px;"><a href="/sc" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-microscope"></use></svg></span> Перейти в СЦ</a></li>
+                <li data-mode="sc" style="display: none;"><a href="#" data-section="sc-pending" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-microscope"></use></svg></span> На исправление</a></li>
+                <li data-mode="sc" style="display: none;"><a href="#" data-section="sc-completed" class="nav-link"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-check"></use></svg></span> Завершённые ремонты</a></li>
+                <li data-mode="sc" style="display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tg-border);"><a href="/" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-production"></use></svg></span> Перейти в производство</a></li>
+                <li data-mode="sc" style="display: none; padding-top: 4px;"><a href="/otk" class="nav-link" style="color: var(--tg-primary);"><span class="nav-icon"><svg width="20" height="20"><use href="#icon-otk"></use></svg></span> Перейти в ОТК</a></li>
+            </ul>
+        </nav>
+
+        <!-- Основной контент -->
+        <main class="main-content">
+            <!-- Мобильное горизонтальное меню -->
+            <nav class="mobile-nav-bar" id="mobile-nav-bar">
+                <a href="#" data-section="dashboard" class="mobile-nav-item active" data-mode-mobile="production" title="Главная">
+                    <svg width="24" height="24"><use href="#icon-dashboard"></use></svg>
+                    <span class="mobile-nav-label">Главная</span>
+                </a>
+                <a href="#" data-section="warehouse" class="mobile-nav-item" data-mode-mobile="production" title="Склад">
+                    <svg width="24" height="24"><use href="#icon-warehouse"></use></svg>
+                    <span class="mobile-nav-label">Склад</span>
+                </a>
+                <a href="#" data-section="recipes" class="mobile-nav-item" data-role="admin" data-mode-mobile="production" style="display: none;" title="Рецептура">
+                    <svg width="24" height="24"><use href="#icon-recipes"></use></svg>
+                    <span class="mobile-nav-label">Рецептура</span>
+                </a>
+                <a href="#" data-section="orders" class="mobile-nav-item" data-mode-mobile="production" title="Заказы">
+                    <svg width="24" height="24"><use href="#icon-orders"></use></svg>
+                    <span class="mobile-nav-label">Заказы</span>
+                </a>
+                <a href="#" data-section="production" class="mobile-nav-item" data-mode-mobile="production" title="Производство">
+                    <svg width="24" height="24"><use href="#icon-production"></use></svg>
+                    <span class="mobile-nav-label">Производство</span>
+                </a>
+                <a href="#" data-section="archive" class="mobile-nav-item" data-mode-mobile="production" title="Архивы">
+                    <svg width="24" height="24"><use href="#icon-archive"></use></svg>
+                    <span class="mobile-nav-label">Архивы</span>
+                </a>
+                <a href="#" data-section="shift-schedule" class="mobile-nav-item" data-role="admin" data-mode-mobile="production" style="display: none;" title="График смен">
+                    <svg width="24" height="24"><use href="#icon-calendar"></use></svg>
+                    <span class="mobile-nav-label">График смен</span>
+                </a>
+                <a href="#" data-section="otk-pending" class="mobile-nav-item" data-mode-mobile="otk" style="display: none;" title="На проверке">
+                    <svg width="24" height="24"><use href="#icon-check"></use></svg>
+                    <span class="mobile-nav-label">На проверке</span>
+                </a>
+                <a href="#" data-section="otk-ready" class="mobile-nav-item" data-mode-mobile="otk" style="display: none;" title="Готово к отгрузке">
+                    <svg width="24" height="24"><use href="#icon-shipping"></use></svg>
+                    <span class="mobile-nav-label">Готово</span>
+                </a>
+                <a href="#" data-section="otk-regulations" class="mobile-nav-item" data-mode-mobile="otk" style="display: none;" title="Регламенты">
+                    <svg width="24" height="24"><use href="#icon-file-text"></use></svg>
+                    <span class="mobile-nav-label">Регламенты</span>
+                </a>
+                <a href="#" data-section="otk-reports" class="mobile-nav-item" data-mode-mobile="otk" style="display: none;" title="Отчёты">
+                    <svg width="24" height="24"><use href="#icon-bar-chart"></use></svg>
+                    <span class="mobile-nav-label">Отчёты</span>
+                </a>
+                <a href="#" data-section="sc-pending" class="mobile-nav-item" data-mode-mobile="sc" style="display: none;" title="На исправление">
+                    <svg width="24" height="24"><use href="#icon-microscope"></use></svg>
+                    <span class="mobile-nav-label">На исправление</span>
+                </a>
+                <a href="#" data-section="sc-completed" class="mobile-nav-item" data-mode-mobile="sc" style="display: none;" title="Завершённые">
+                    <svg width="24" height="24"><use href="#icon-check"></use></svg>
+                    <span class="mobile-nav-label">Завершённые</span>
+                </a>
+            </nav>
+            
+            <header class="top-bar">
+                <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
+                    <h1 id="page-title">Главная панель</h1>
+                    <div id="dashboard-stats-header" style="display: none; margin-left: 24px; gap: 16px; align-items: center; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">Производство:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-text);" id="header-orders-count">-</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">В работе:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-text);" id="header-in-production-count">-</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">Пауза:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-text);" id="header-paused-count">-</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">ОТК:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-blue);" id="header-on-otk-count">-</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">СЦ:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-warning);" id="header-on-sc-count">-</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 13px; color: var(--tg-text-secondary);">К отгрузке:</span>
+                            <span style="font-size: 15px; font-weight: 600; color: var(--tg-success);" id="header-shippable-count">-</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 20px;">
+                    <!-- Кнопка автообновления -->
+                    <button class="theme-toggle" id="auto-refresh-toggle" 
+                            onclick="toggleAutoRefresh()" 
+                            title="Включить/выключить автообновление (30 сек)">
+                        <svg id="auto-refresh-icon" width="20" height="20" style="stroke: var(--tg-text-secondary);">
+                            <use href="#icon-refresh-cw"></use>
+                        </svg>
+                    </button>
+                    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Переключить тему">
+                        <svg width="20" height="20" id="theme-icon-sun" style="display: none;"><use href="#icon-sun"></use></svg>
+                        <svg width="20" height="20" id="theme-icon-moon"><use href="#icon-moon"></use></svg>
+                    </button>
+                    <div class="api-status" id="apiStatus">
+                        <span class="status-dot"></span>
+                        <span class="api-status-text">Проверка подключения...</span>
+                    </div>
+                    <div class="user-info" id="userInfo" style="display: none;">
+                        <span id="userName" style="cursor: pointer;" onclick="showMyProfile()" title="Мой профиль"></span>
+                        <button class="btn btn-small btn-secondary" onclick="logout()">Выйти</button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard -->
+            <section id="dashboard" class="content-section active">
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>Заказы на производство</h3>
+                        <p class="stat-value" id="orders-count">-</p>
+                    </div>
+                    <div class="card">
+                        <h3>В работе</h3>
+                        <p class="stat-value" id="in-production-count">-</p>
+                    </div>
+                    <div class="card">
+                        <h3>На паузе</h3>
+                        <p class="stat-value" id="paused-count">-</p>
+                    </div>
+                    <div class="card">
+                        <h3>На ОТК</h3>
+                        <p class="stat-value" id="on-otk-count">-</p>
+                    </div>
+                    <div class="card">
+                        <h3>В сервисном центре</h3>
+                        <p class="stat-value" id="on-sc-count">-</p>
+                    </div>
+                    <div class="card">
+                        <h3>Готово к отгрузке</h3>
+                        <p class="stat-value" id="shippable-count">-</p>
+                    </div>
+                    <div class="card" data-role="admin" style="display: none;">
+                        <h3>Пользователи</h3>
+                        <p class="stat-value" id="users-count">-</p>
+                    </div>
+                </div>
+                
+                <!-- Поздравления с днем рождения -->
+                <div id="birthday-section" class="birthday-card" style="display: none;">
+                    <h2 style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                        <svg width="20" height="20"><use href="#icon-gift"></use></svg>
+                        С днем рождения
+                    </h2>
+                    <div id="birthday-list"></div>
+                </div>
+                
+                <!-- Переключатель: Заказы / Задачи -->
+                <div style="margin-top: 24px;">
+                    <div id="dashboard-tab-switcher" style="display: flex; align-items: center; gap: 0; margin-bottom: 0; border-bottom: 2px solid var(--tg-border); position: relative;">
+                        <button id="dash-tab-orders" class="dash-tab active" onclick="switchDashboardTab('orders')" style="display: flex; align-items: center; gap: 8px; padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 15px; font-weight: 600; color: var(--tg-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s;">
+                            <svg width="18" height="18"><use href="#icon-orders"></use></svg>
+                            Производственные задачи
+                        </button>
+                        <button id="dash-tab-tasks" class="dash-tab" onclick="switchDashboardTab('tasks')" style="display: flex; align-items: center; gap: 8px; padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 15px; font-weight: 600; color: var(--tg-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s;">
+                            <svg width="18" height="18"><use href="#icon-clipboard-list"></use></svg>
+                            Общие задачи
+                            <span id="tasks-pending-badge" style="display: none; background: var(--tg-danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 7px; min-width: 18px; text-align: center;"></span>
+                        </button>
+                        <button id="dash-regulation-btn" class="btn btn-small" onclick="showSmdOperatorRegulation()" title="Открыть регламент SMD" style="margin-left: 8px;">
+                            <svg width="16" height="16"><use href="#icon-book"></use></svg>
+                            Регламент SMD
+                        </button>
+                        <div style="flex:1;"></div>
+                        <button id="dash-refresh-orders" class="btn btn-small" onclick="loadDashboardOrders()" title="Обновить">
+                            <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                        </button>
+                        <button id="dash-refresh-tasks" class="btn btn-small" onclick="loadDashboardTasks()" title="Обновить" style="display: none;">
+                            <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                        </button>
+                    </div>
+
+                    <!-- Панель заказов -->
+                    <div id="orders-showroom-section" class="orders-showroom-card" style="margin-top: 0; border-top: none;">
+                        <div id="orders-showroom-container" style="overflow-x: auto;">
+                            <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка заказов...</div>
+                        </div>
+                    </div>
+
+                    <!-- Панель задач -->
+                    <div id="tasks-section" style="display: none; padding: 16px 0;">
+                        <div id="tasks-add-form" style="display: flex; gap: 6px; margin-bottom: 16px; align-items: stretch;">
+                            <input type="text" id="task-title-input" placeholder="Новая задача..." style="flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 14px; background: var(--tg-bg); color: var(--tg-text);" onkeydown="if(event.key==='Enter') addNewTask()">
+                            <select id="task-priority-select" style="padding: 8px 8px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 13px; background: var(--tg-bg); color: var(--tg-text); flex-shrink: 0;">
+                                <option value="normal">Обычный</option>
+                                <option value="high">Срочный</option>
+                                <option value="low">Низкий</option>
+                            </select>
+                            <input type="text" id="task-operator-input" placeholder="№ сотр." style="width: 72px; flex-shrink: 0; padding: 8px 6px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 13px; background: var(--tg-bg); color: var(--tg-text); text-align: center;" title="Номер сотрудника (пусто = любой)">
+                            <button class="btn btn-primary" onclick="addNewTask()" style="padding: 8px 14px; white-space: nowrap; flex-shrink: 0;">
+                                <svg width="16" height="16" style="vertical-align: middle;"><use href="#icon-add"></use></svg>
+                            </button>
+                        </div>
+                        <div id="tasks-container">
+                            <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка задач...</div>
+                        </div>
+                    </div>
+                </div>
+                
+            </section>
+
+            <!-- Склад -->
+            <section id="warehouse" class="content-section">
+                <div class="section-header">
+                    <h2>Управление складом</h2>
+                    <button class="btn btn-primary" onclick="showAddComponentModal()">+ Добавить компонент</button>
+                </div>
+                <div class="toolbar">
+                    <button class="btn btn-success" onclick="showBatchModal('incoming')">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-arrow-down"></use></svg>
+                        Оприходовать
+                    </button>
+                    <button class="btn btn-danger" onclick="showBatchModal('writeoff')">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-arrow-up"></use></svg>
+                        Списать
+                    </button>
+                    <button class="btn btn-primary" onclick="showInventoryModal()">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-edit"></use></svg>
+                        Инвентаризация
+                    </button>
+                    <button class="btn btn-warning" onclick="showBelowMinimumModal()">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-alert-circle"></use></svg>
+                        Ниже минимума
+                    </button>
+                    <button class="btn" onclick="verifyReservations()" title="Проверить и обновить резервирование компонентов">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-rotate-ccw"></use></svg>
+                        Обновить
+                    </button>
+                    <button class="btn" onclick="showWarehouseOperationsHistory()" title="История операций склада">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-clock"></use></svg>
+                        История
+                    </button>
+                </div>
+                <div class="warehouse-filters" style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 16px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="warehouse-category-filter" style="font-weight: 500; white-space: nowrap;">Категория:</label>
+                        <select id="warehouse-category-filter" onchange="filterWarehouseByCategory()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 200px; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Все категории</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="warehouse-block-filter" style="font-weight: 500; white-space: nowrap;">Отдел:</label>
+                        <select id="warehouse-block-filter" onchange="filterWarehouseByCategory()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 160px; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Все отделы</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="warehouse-stock-filter" style="font-weight: 500; white-space: nowrap;">Остаток:</label>
+                        <select id="warehouse-stock-filter" onchange="filterWarehouseByCategory()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 170px; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Любой</option>
+                            <option value="below_min">Ниже минимума</option>
+                            <option value="in_stock">В наличии</option>
+                            <option value="zero">Нулевой</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-small" id="warehouse-toggle-all-btn" onclick="toggleAllWarehouseCategories()" title="Развернуть / свернуть все категории" style="padding: 6px 12px; font-size: 13px;">
+                        <svg width="14" height="14" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-chevron-right"></use></svg>
+                        Развернуть всё
+                    </button>
+                </div>
+                <div class="warehouse-search">
+                    <div style="display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap;">
+                        <select id="warehouse-search-field" onchange="filterWarehouseByCategory()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 14px; min-width: 180px; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="all">По всем параметрам</option>
+                            <option value="name">По названию</option>
+                            <option value="category">По категории</option>
+                            <option value="package">По параметрам корпуса</option>
+                            <option value="size">По размеру</option>
+                            <option value="capacitance">По емкости</option>
+                            <option value="voltage">По напряжению</option>
+                            <option value="tolerance">По допуску</option>
+                            <option value="comment">По комментарию</option>
+                        </select>
+                        <div class="search-input-wrapper" style="flex: 1; min-width: 260px;">
+                        <input type="text" 
+                               id="warehouse-search-input" 
+                               placeholder="Поиск компонента по параметрам..." 
+                               oninput="showWarehouseSuggestions(this.value); filterWarehouseByCategory();"
+                               onfocus="showWarehouseSuggestions(this.value)"
+                               onblur="setTimeout(() => hideWarehouseSuggestions(), 200)"
+                               class="search-input"
+                               autocomplete="off">
+                        <div id="warehouse-suggestions" class="search-suggestions" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="warehouse-container" class="warehouse-accordion">
+                    <div style="padding: 16px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+            <!-- Рецептура -->
+            <section id="recipes" class="content-section">
+                <div class="section-header">
+                    <h2>Рецептура</h2>
+                    <button class="btn btn-primary" onclick="showAddRecipeModal()">+ Добавить рецепт</button>
+                </div>
+                <div class="toolbar">
+                    <button class="btn btn-info" onclick="updateRecipeStock()">↻ Обновить остатки</button>
+                    <button class="btn" onclick="showExportRecipesModal()">📄 Экспорт рецептуры</button>
+                </div>
+                <div id="recipes-container" class="recipes-accordion">
+                    <div style="padding: 16px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+            <!-- Мои заказы -->
+            <section id="my-orders" class="content-section">
+                <div class="section-header">
+                    <h2>Мои заказы</h2>
+                </div>
+                
+                <!-- Оповещение о неподтвержденных сменах -->
+                <div id="shifts-notification" class="alert alert-warning" style="display: none; margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <div>
+                            <strong>⚠️ У вас есть неподтвержденные смены!</strong>
+                            <p style="margin: 8px 0 0 0; font-size: 14px;">Пожалуйста, подтвердите или отмените запланированные смены.</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="loadMyShifts()">Просмотреть смены</button>
+                    </div>
+                </div>
+                
+                <!-- Мои смены -->
+                <div style="margin-bottom: 32px;">
+                    <h3 style="margin-bottom: 16px;">Мои смены</h3>
+                    <div id="my-shifts-container">
+                        <div style="padding: 16px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                    </div>
+                </div>
+                
+                <div class="table-container">
+                    <table id="my-orders-table">
+                        <thead>
+                            <tr>
+                                <th>Изделие</th>
+                                <th>Количество</th>
+                                <th>Приоритет</th>
+                                <th>Срок</th>
+                                <th>Статус</th>
+                                <th>Дата создания</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="my-orders-tbody">
+                            <tr><td colspan="7">Загрузка...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Заказы -->
+            <section id="orders" class="content-section">
+                <div class="section-header">
+                    <h2>Заказы на производство</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-secondary" onclick="showCalculatorModal()" title="Калькулятор: расчёт возможного количества изделий по остаткам компонентов">
+                            <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-calculator"></use></svg>
+                            Калькулятор
+                        </button>
+                        <button class="btn btn-primary" onclick="showCreateOrderModal()">+ Создать заказ</button>
+                    </div>
+                </div>
+                
+                <!-- Фильтр по статусам -->
+                <div style="margin: 0 32px 16px 32px; padding: 16px; background: var(--tg-bg-secondary); border-radius: 8px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px;">
+                        <label for="orders-status-filter" style="font-weight: 500; white-space: nowrap;">Статус:</label>
+                        <select id="orders-status-filter" onchange="filterOrdersByStatus()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 200px; flex: 1; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Все активные заказы</option>
+                            <option value="Создан">Создан</option>
+                            <option value="В работе">В работе</option>
+                            <option value="Готов к передаче на ОТК">Готов к передаче на ОТК</option>
+                            <option value="Передан на ОТК">Передан на ОТК</option>
+                            <option value="Завершен">Завершен</option>
+                            <option value="Отменен">Отменен</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px;">
+                        <label for="orders-type-filter" style="font-weight: 500; white-space: nowrap;">Тип заказа:</label>
+                        <select id="orders-type-filter" onchange="filterOrdersByStatus()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 200px; flex: 1; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Все типы</option>
+                            <option value="normal">Обычные заказы</option>
+                            <option value="repair">Заказы на восстановление</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px;">
+                        <label for="orders-project-filter" style="font-weight: 500; white-space: nowrap;">Проект:</label>
+                        <select id="orders-project-filter" onchange="filterOrdersByStatus()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 4px; font-size: 14px; min-width: 200px; flex: 1; background: var(--tg-bg); color: var(--tg-text);">
+                            <option value="">Все проекты</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-secondary" onclick="resetOrdersFilter()" style="margin-left: auto;">Сбросить</button>
+                </div>
+                
+                <!-- Вкладки -->
+                <div class="tabs-container" style="margin: 0 32px 16px 32px; border-bottom: 2px solid var(--tg-border-light); display: flex; gap: 0;">
+                    <button class="tab-button active" onclick="switchOrdersTab('table')" id="orders-tab-table-btn">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-list"></use></svg>
+                        Таблица
+                    </button>
+                    <button class="tab-button" onclick="switchOrdersTab('calendar')" id="orders-tab-calendar-btn">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-calendar"></use></svg>
+                        Календарь
+                    </button>
+                </div>
+                
+                <!-- Вкладка: Таблица -->
+                <div id="orders-table-tab" class="orders-tab-content">
+                    <div class="table-container">
+                        <table id="orders-table">
+                            <thead>
+                                <tr>
+                                    <th>ID партии</th>
+                                    <th>Изделие</th>
+                                    <th>Количество</th>
+                                    <th>Приоритет</th>
+                                    <th>Срок</th>
+                                    <th>Статус</th>
+                                    <th>Дата создания</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="orders-tbody">
+                                <tr><td colspan="7">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Вкладка: Календарь -->
+                <div id="orders-calendar-tab" class="orders-tab-content" style="display: none;">
+                    <div style="padding: 0 32px 32px 32px;">
+                        <div id="orders-calendar-container">
+                            <div style="text-align: center; padding: 32px;">Загрузка календаря...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Запасы на производстве -->
+            <section id="production-stock" class="content-section">
+                <div class="section-header">
+                    <h2>Запасы на производстве</h2>
+                    <button class="btn btn-primary" onclick="showAddProductionStockModal()">+ Добавить</button>
+                </div>
+                <div class="toolbar" style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
+                    <input type="text" id="ps-search-input" placeholder="Поиск компонента..." oninput="filterProductionStock()" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 6px; font-size: 14px; min-width: 280px; background: var(--tg-bg); color: var(--tg-text);">
+                    <button class="btn btn-small" id="ps-toggle-all-btn" onclick="toggleAllPsCategories()" title="Развернуть / свернуть все категории" style="padding: 6px 12px; font-size: 13px;">
+                        <svg width="14" height="14" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-chevron-right"></use></svg>
+                        Развернуть всё
+                    </button>
+                </div>
+                <div id="production-stock-container"></div>
+            </section>
+
+            <!-- Производство -->
+            <section id="production" class="content-section">
+                <div class="section-header">
+                    <h2>Производство</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-secondary" onclick="showSmdOperatorRegulation()" title="Регламент работы оператора SMD-линии">
+                            <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-book"></use></svg>
+                            Регламент SMD
+                        </button>
+                        <button class="btn btn-secondary" onclick="showShiftEndChecklist()" title="Чеклист завершения рабочей смены">
+                            <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-check-circle"></use></svg>
+                            Чеклист завершения смены
+                        </button>
+                        <a href="daily-progress-report.html" target="_blank" class="btn btn-secondary" style="text-decoration: none;">
+                            <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-bar-chart"></use></svg>
+                            Отчет по выполнению
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- Вкладки -->
+                <div class="tabs-container" style="margin: 0 32px 16px 32px; border-bottom: 2px solid var(--tg-border-light); display: flex; gap: 0;">
+                    <button class="tab-button active" onclick="switchProductionTab('batches')" id="production-tab-batches-btn">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-package"></use></svg>
+                        Партии производства
+                    </button>
+                </div>
+                
+                <!-- Партии производства -->
+                <div id="production-batches-tab" class="production-tab-content">
+                <div class="filters-container" style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div class="filter-group" style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px;">
+                        <label for="production-status-filter" style="font-weight: 500; white-space: nowrap;">Статус:</label>
+                        <select id="production-status-filter" onchange="filterProductionByStatus()" style="padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; font-size: 14px; min-width: 200px; flex: 1;">
+                            <option value="">Все статусы</option>
+                            <option value="Запланировано">Запланировано</option>
+                            <option value="Запущена">Запущена</option>
+                            <option value="На паузе">На паузе</option>
+                            <option value="Готов к проверке ОТК">Готов к проверке ОТК</option>
+                            <option value="Завершена">Завершена</option>
+                            <option value="Отменена">Отменена</option>
+                        </select>
+                    </div>
+                    <div class="filter-group" style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px;">
+                        <label for="production-type-filter" style="font-weight: 500; white-space: nowrap;">Тип производства:</label>
+                        <select id="production-type-filter" onchange="filterProductionByStatus()" style="padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; font-size: 14px; min-width: 200px; flex: 1;">
+                            <option value="">Все типы</option>
+                            <option value="SMD">SMD</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table id="production-table">
+                        <thead>
+                            <tr>
+                                <th>ID партии</th>
+                                <th>Изделие</th>
+                                <th>Тип</th>
+                                <th>Запланировано</th>
+                                <th>Выпущено</th>
+                                <th>Оператор</th>
+                                <th>Статус</th>
+                                <th>Дата запуска</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="production-tbody">
+                            <tr><td colspan="9">Загрузка...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                </div>
+            </section>
+
+            <!-- Архивы -->
+            <section id="archive" class="content-section">
+                <div class="section-header">
+                    <h2>Архивы</h2>
+                </div>
+                <div style="margin: 0 32px 12px 32px; display: flex; gap: 8px; border-bottom: 1px solid var(--tg-border);">
+                    <button id="archive-tab-orders-btn" class="tab-button active" onclick="switchArchiveView('orders')" style="padding: 10px 16px;">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-archive"></use></svg>
+                        Архив заказов
+                    </button>
+                    <button id="archive-tab-checklists-btn" class="tab-button" onclick="switchArchiveView('checklists')" style="padding: 10px 16px;">
+                        <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-check-circle"></use></svg>
+                        История чеклистов
+                    </button>
+                </div>
+                <div id="archive-orders-filters" style="margin: 0 32px 24px 32px;">
+                    <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 250px;">
+                            <input type="text" id="archive-search" placeholder="Поиск по номеру заказа, изделию или ID партии..." 
+                                   style="width: 100%; padding: 10px 16px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 14px;"
+                                   oninput="filterArchiveOrders()">
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="date" id="archive-start-date" 
+                                   style="padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 14px;"
+                                   onchange="filterArchiveOrders()">
+                            <input type="date" id="archive-end-date" 
+                                   style="padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 8px; font-size: 14px;"
+                                   onchange="filterArchiveOrders()">
+                        </div>
+                    </div>
+                </div>
+                <div class="table-container" id="archive-orders-table-wrap">
+                    <div id="archive-orders-container" style="padding: 0 32px;">
+                        <div style="text-align: center; padding: 32px;">Загрузка...</div>
+                    </div>
+                </div>
+                <div id="archive-checklist-history-wrap" style="display: none; margin: 0 32px;">
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;">
+                        <input type="date" id="checklist-history-date-from" style="padding: 8px 10px; border: 1px solid var(--tg-border); border-radius: 8px;">
+                        <span style="color: var(--tg-text-secondary);">—</span>
+                        <input type="date" id="checklist-history-date-to" style="padding: 8px 10px; border: 1px solid var(--tg-border); border-radius: 8px;">
+                        <button class="btn btn-small" onclick="loadChecklistHistoryArchive()">Загрузить</button>
+                    </div>
+                    <div id="archive-checklist-history-container" class="table-container" style="margin: 0;">
+                        <div style="text-align: center; padding: 32px; color: var(--tg-text-secondary);">Выберите период и нажмите «Загрузить»</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Пользователи (только для админов) -->
+            <section id="users" class="content-section" data-role="admin">
+                <div class="section-header">
+                    <h2>Пользователи</h2>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="users-show-inactive" onchange="loadUsers()">
+                        <span>Показать неактивных</span>
+                    </label>
+                    <button class="btn btn-primary" onclick="showCreateUserModal()">+ Создать пользователя</button>
+                </div>
+                <!-- Список пользователей -->
+                <div id="users-active-tab" class="users-tab-content">
+                    <div class="table-container">
+                        <table id="users-table">
+                            <thead>
+                                <tr>
+                                    <th>Логин</th>
+                                    <th>Полное имя</th>
+                                    <th>Email</th>
+                                    <th>Телефон</th>
+                                    <th>Роль</th>
+                                    <th>Отделы</th>
+                                    <th>Статус</th>
+                                    <th>Последний вход</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                                <tbody id="users-tbody">
+                                    <tr><td colspan="9">Загрузка...</td></tr>
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- График смен (только для админов) -->
+            <section id="shift-schedule" class="content-section shift-schedule-section" data-role="admin" style="display: none;">
+                <div class="section-header shift-schedule-header">
+                    <h2>График смен</h2>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button class="btn btn-primary" onclick="showAddShiftScheduleModal()">+ Добавить график</button>
+                    </div>
+                </div>
+                
+                <!-- Вкладки -->
+                <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid var(--tg-border);">
+                    <button id="shift-schedule-calendar-tab" class="tab-button active" onclick="switchShiftScheduleTab('calendar')" style="padding: 12px 24px; background: none; border: none; border-bottom: 3px solid var(--tg-primary); color: var(--tg-primary); font-weight: 600; cursor: pointer; font-size: 14px;">
+                        Календарь
+                    </button>
+                    <button id="shift-schedule-history-tab" class="tab-button" onclick="switchShiftScheduleTab('history')" style="padding: 12px 24px; background: none; border: none; border-bottom: 3px solid transparent; color: var(--tg-text-secondary); font-weight: 500; cursor: pointer; font-size: 14px;">
+                        История отчетов
+                    </button>
+                </div>
+                
+                <!-- Контент вкладки Календарь -->
+                <div id="shift-schedule-calendar-content" class="shift-schedule-tab-content">
+                <div class="shift-schedule-controls">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: end;">
+                        <div>
+                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--tg-text);">Период отображения:</label>
+                            <input type="date" id="schedule-start-date" 
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 6px; font-size: 14px; background: var(--tg-bg); color: var(--tg-text); box-sizing: border-box;"
+                                   onchange="loadShiftSchedule()">
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--tg-text);">Количество дней:</label>
+                            <input type="number" id="schedule-days-count" value="28" min="7" max="90"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 6px; font-size: 14px; background: var(--tg-bg); color: var(--tg-text); box-sizing: border-box;"
+                                   onchange="loadShiftSchedule()">
+                        </div>
+                        <div>
+                            <button class="btn btn-secondary" onclick="loadShiftSchedule()" style="width: 100%; box-sizing: border-box;">
+                                <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-rotate-ccw"></use></svg>
+                                Обновить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-container shift-schedule-table-container">
+                    <div id="shift-schedule-container" style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; box-sizing: border-box;">
+                        <div style="text-align: center; padding: 32px;">Загрузка...</div>
+                    </div>
+                </div>
+                </div>
+                
+                <!-- Контент вкладки История отчетов -->
+                <div id="shift-schedule-history-content" class="shift-schedule-tab-content" style="display: none;">
+                    <div style="margin-bottom: 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                        <div>
+                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--tg-text);">Период отчета:</label>
+                            <input type="date" id="history-start-date" 
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 6px; font-size: 14px; background: var(--tg-bg); color: var(--tg-text); box-sizing: border-box; min-width: 150px;">
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--tg-text);">По:</label>
+                            <input type="date" id="history-end-date" 
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--tg-border); border-radius: 6px; font-size: 14px; background: var(--tg-bg); color: var(--tg-text); box-sizing: border-box; min-width: 150px;">
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: end;">
+                            <button class="btn btn-secondary" onclick="loadShiftScheduleHistory()" style="padding: 10px 20px;">
+                                <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-rotate-ccw"></use></svg>
+                                Загрузить
+                            </button>
+                            <button class="btn btn-primary" onclick="exportShiftScheduleReport()" style="padding: 10px 20px;">
+                                <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-download"></use></svg>
+                                Выгрузить в PDF
+                            </button>
+                            <button class="btn btn-success" onclick="downloadShiftScheduleReportPDF()" style="padding: 10px 20px;">
+                                <svg width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><use href="#icon-download"></use></svg>
+                                Скачать отчет
+                            </button>
+                        </div>
+                    </div>
+                    <div id="shift-schedule-history-container" style="width: 100%;">
+                        <div style="text-align: center; padding: 32px; color: var(--tg-text-secondary);">
+                            Выберите период и нажмите "Загрузить" для просмотра истории отчетов
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ОТК: Партии на проверке -->
+            <section id="otk-pending" class="content-section" data-mode="otk" style="display: none;">
+                <div class="section-header">
+                    <h2>Партии на проверке ОТК</h2>
+                    <button class="btn" onclick="loadOtkPending()" title="Обновить">
+                        <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                    </button>
+                </div>
+                <div id="otk-pending-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+            <!-- ОТК: Регламенты -->
+            <section id="otk-regulations" class="content-section" data-mode="otk" style="display: none;">
+                <div class="section-header">
+                    <h2>Регламенты</h2>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <label for="otk-reg-product" style="color: var(--tg-text-secondary); font-size: 14px;">Регламент:</label>
+                        <select id="otk-reg-product" title="Общий регламент или конкретное изделие (схемы, компоненты, типичные проблемы)" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 6px; background: var(--tg-bg); color: var(--tg-text); min-width: 220px;" onchange="loadOtkRegulations()">
+                            <option value="">— Общий регламент ОТК —</option>
+                        </select>
+                        <button class="btn" onclick="loadOtkRegulations()" title="Обновить">
+                            <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="otk-regulations-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка регламента...</div>
+                </div>
+            </section>
+
+            <!-- ОТК: Отчёты -->
+            <section id="otk-reports" class="content-section" data-mode="otk" style="display: none;">
+                <div class="section-header">
+                    <h2>Отчёты ОТК</h2>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <label for="otk-report-date-from" style="color: var(--tg-text-secondary); font-size: 14px;">Период:</label>
+                        <input type="date" id="otk-report-date-from" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 6px; background: var(--tg-bg); color: var(--tg-text);">
+                        <span style="color: var(--tg-text-secondary);">—</span>
+                        <input type="date" id="otk-report-date-to" style="padding: 8px 12px; border: 1px solid var(--tg-border); border-radius: 6px; background: var(--tg-bg); color: var(--tg-text);">
+                        <button class="btn btn-primary" onclick="loadOtkReports()">Загрузить</button>
+                        <button class="btn btn-secondary" onclick="exportOtkReportToPDF()" title="Выгрузить в PDF">
+                            <svg width="16" height="16"><use href="#icon-download"></use></svg>
+                            PDF
+                        </button>
+                    </div>
+                </div>
+                <div id="otk-reports-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Выберите период и нажмите «Загрузить»</div>
+                </div>
+            </section>
+
+            <!-- ОТК: Готово к отгрузке -->
+            <section id="otk-ready" class="content-section" data-mode="otk" style="display: none;">
+                <div class="section-header">
+                    <h2>Готово к отгрузке</h2>
+                    <button class="btn" onclick="loadOtkReady()" title="Обновить">
+                        <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                    </button>
+                </div>
+                <div id="otk-ready-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+            <!-- СЦ: Партии на исправление -->
+            <section id="sc-pending" class="content-section" data-mode="sc" style="display: none;">
+                <div class="section-header">
+                    <h2>Партии на исправление</h2>
+                    <button class="btn" onclick="loadScPending()" title="Обновить">
+                        <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                    </button>
+                </div>
+                <div id="sc-pending-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+            <!-- СЦ: Завершённые ремонты -->
+            <section id="sc-completed" class="content-section" data-mode="sc" style="display: none;">
+                <div class="section-header">
+                    <h2>Завершённые ремонты</h2>
+                    <button class="btn" onclick="loadScCompleted()" title="Обновить">
+                        <svg width="16" height="16"><use href="#icon-refresh-cw"></use></svg>
+                    </button>
+                </div>
+                <div id="sc-completed-container">
+                    <div style="padding: 32px; text-align: center; color: var(--tg-text-secondary);">Загрузка...</div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Модальные окна будут добавлены через JavaScript -->
+    <div id="modal-overlay" class="modal-overlay">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()"><svg width="20" height="20"><use href="#icon-close"></use></svg></span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- SVG иконки -->
+    <svg style="display: none;">
+      <symbol id="icon-dashboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="tile-tl"><rect x="3" y="3" width="7" height="7"></rect></g>
+        <g class="tile-tr"><rect x="14" y="3" width="7" height="7"></rect></g>
+        <g class="tile-br"><rect x="14" y="14" width="7" height="7"></rect></g>
+        <g class="tile-bl"><rect x="3" y="14" width="7" height="7"></rect></g>
+      </symbol>
+      <symbol id="icon-warehouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="house-body"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></g>
+        <g class="house-door"><polyline points="9 22 9 12 15 12 15 22"></polyline></g>
+      </symbol>
+      <symbol id="icon-production-stock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="box-body"><path d="M21 8V21H3V8"></path><path d="M10 12H14"></path></g>
+        <g class="box-lid"><path d="M23 3H1V8H23V3Z"></path></g>
+      </symbol>
+      <symbol id="icon-recipes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="doc-body"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></g>
+        <g class="doc-fold"><polyline points="14 2 14 8 20 8"></polyline></g>
+      </symbol>
+      <symbol id="icon-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+        <polyline points="21 15 16 10 5 21"></polyline>
+      </symbol>
+      <symbol id="icon-planning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+        <line x1="16" y1="2" x2="16" y2="6"></line>
+        <line x1="8" y1="2" x2="8" y2="6"></line>
+        <line x1="3" y1="10" x2="21" y2="10"></line>
+      </symbol>
+      <symbol id="icon-production" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="clock-face"><circle cx="12" cy="12" r="10"></circle></g>
+        <g class="clock-hands"><polyline points="12 6 12 12 16 14"></polyline></g>
+      </symbol>
+      <symbol id="icon-otk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="check-circle"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path></g>
+        <g class="check-mark"><polyline points="22 4 12 14.01 9 11.01"></polyline></g>
+      </symbol>
+      <symbol id="icon-finished" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="person-main"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></g>
+        <g class="person-second"><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></g>
+      </symbol>
+      <symbol id="icon-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </symbol>
+      <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </symbol>
+      <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+      </symbol>
+      <symbol id="icon-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"></polyline>
+      </symbol>
+      <symbol id="icon-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+      </symbol>
+      <symbol id="icon-gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 12 20 22 4 22 4 12"></polyline>
+        <rect x="2" y="7" width="20" height="5"></rect>
+        <line x1="12" y1="22" x2="12" y2="7"></line>
+        <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path>
+        <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path>
+      </symbol>
+      <symbol id="icon-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+      </symbol>
+      <symbol id="icon-trophy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="6" y1="9" x2="18" y2="9"></line>
+        <path d="M6 9V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v3"></path>
+        <path d="M6 9l2 12h8l2-12"></path>
+        <path d="M9 9V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path>
+        <circle cx="12" cy="17" r="2"></circle>
+      </symbol>
+      <symbol id="icon-delete" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        <line x1="10" y1="11" x2="10" y2="17"></line>
+        <line x1="14" y1="11" x2="14" y2="17"></line>
+      </symbol>
+      <symbol id="icon-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="stack-bot"><rect x="3" y="16" width="14" height="4" rx="1"></rect></g>
+        <g class="stack-mid"><rect x="5" y="11" width="14" height="4" rx="1"></rect></g>
+        <g class="stack-top"><rect x="7" y="6" width="14" height="4" rx="1"></rect></g>
+      </symbol>
+      <symbol id="icon-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </symbol>
+      <symbol id="icon-orders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="box-outer"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></g>
+        <g class="box-inner"><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></g>
+      </symbol>
+      <symbol id="icon-firmware" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+        <line x1="8" y1="6" x2="16" y2="6"></line>
+        <line x1="8" y1="10" x2="16" y2="10"></line>
+        <line x1="8" y1="14" x2="14" y2="14"></line>
+        <line x1="8" y1="18" x2="12" y2="18"></line>
+      </symbol>
+      <symbol id="icon-shipping" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="truck-body"><path d="M1 3h15v13H1z"></path><path d="M16 8h4l3 3v5h-7V8z"></path></g>
+        <g class="truck-wheels"><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></g>
+      </symbol>
+      <symbol id="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+      </symbol>
+      <symbol id="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="4" width="4" height="16"></rect>
+        <rect x="14" y="4" width="4" height="16"></rect>
+      </symbol>
+      <symbol id="icon-arrow-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <polyline points="19 12 12 19 5 12"></polyline>
+      </symbol>
+      <symbol id="icon-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="19" x2="12" y2="5"></line>
+        <polyline points="5 12 12 5 19 12"></polyline>
+      </symbol>
+      <symbol id="icon-printer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 6 2 18 2 18 9"></polyline>
+        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+        <rect x="6" y="14" width="12" height="8"></rect>
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+      </symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </symbol>
+      <symbol id="icon-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="8" y1="6" x2="21" y2="6"></line>
+        <line x1="8" y1="12" x2="21" y2="12"></line>
+        <line x1="8" y1="18" x2="21" y2="18"></line>
+        <line x1="3" y1="6" x2="3.01" y2="6"></line>
+        <line x1="3" y1="12" x2="3.01" y2="12"></line>
+        <line x1="3" y1="18" x2="3.01" y2="18"></line>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </symbol>
+      <symbol id="icon-rotate-ccw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="1 4 1 10 7 10"></polyline>
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+      </symbol>
+      <symbol id="icon-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="cal-body"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="10" x2="21" y2="10"></line></g>
+        <g class="cal-pins"><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line></g>
+      </symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="16" x2="12" y2="12"></line>
+        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+      </symbol>
+      <symbol id="icon-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </symbol>
+      <symbol id="icon-alert-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </symbol>
+      <symbol id="icon-lightbulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="9" y1="21" x2="15" y2="21"></line>
+        <line x1="12" y1="3" x2="12" y2="3.01"></line>
+        <path d="M12 21V9"></path>
+        <path d="M6 9a6 6 0 0 1 12 0"></path>
+      </symbol>
+      <symbol id="icon-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+      </symbol>
+      <symbol id="icon-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+      </symbol>
+      <symbol id="icon-refresh-cw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"></polyline>
+        <polyline points="1 20 1 14 7 14"></polyline>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      </symbol>
+      <symbol id="icon-package" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="16.5" y1="9.4" x2="7.5" y2="4.21"></line>
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+        <line x1="12" y1="22.08" x2="12" y2="12"></line>
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+      </symbol>
+      <symbol id="icon-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="doc-body"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></g>
+        <g class="doc-fold"><polyline points="14 2 14 8 20 8"></polyline></g>
+      </symbol>
+      <symbol id="icon-bar-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="bar bar-1"><line x1="6" y1="20" x2="6" y2="16"></line></g>
+        <g class="bar bar-2"><line x1="12" y1="20" x2="12" y2="10"></line></g>
+        <g class="bar bar-3"><line x1="18" y1="20" x2="18" y2="4"></line></g>
+      </symbol>
+      <symbol id="icon-calculator" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="2" width="16" height="20" rx="2"></rect>
+        <line x1="8" y1="6" x2="16" y2="6"></line>
+        <line x1="8" y1="10" x2="8" y2="10.01"></line>
+        <line x1="12" y1="10" x2="12" y2="10.01"></line>
+        <line x1="16" y1="10" x2="16" y2="10.01"></line>
+        <line x1="8" y1="14" x2="8" y2="14.01"></line>
+        <line x1="12" y1="14" x2="12" y2="14.01"></line>
+        <line x1="16" y1="14" x2="16" y2="14.01"></line>
+        <line x1="8" y1="18" x2="8" y2="18.01"></line>
+        <line x1="12" y1="18" x2="12" y2="18.01"></line>
+        <line x1="16" y1="18" x2="16" y2="18.01"></line>
+      </symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="person-main"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></g>
+        <g class="person-second"><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></g>
+      </symbol>
+      <symbol id="icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </symbol>
+      <symbol id="icon-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+      </symbol>
+      <symbol id="icon-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+        <line x1="12" y1="9" x2="12" y2="13"></line>
+        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243m-4.242 0L5.636 18.364m12.728 0l-4.243-4.243m-4.242 0L5.636 5.636"></path>
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </symbol>
+      <symbol id="icon-map-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+        <circle cx="12" cy="10" r="3"></circle>
+      </symbol>
+      <symbol id="icon-tool" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+      </symbol>
+      <symbol id="icon-microscope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <g class="micro-base"><path d="M6 18h8"></path><path d="M3 22h18"></path><path d="M14 22a7 7 0 1 0 0-14h-1"></path><path d="M9 14h2"></path></g>
+        <g class="micro-tube"><path d="M9 12a2 2 0 0 1-2-2V6h6v4a2 2 0 0 1-2 2Z"></path><path d="M12 6V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3"></path></g>
+      </symbol>
+      <symbol id="icon-trending-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+        <polyline points="17 6 23 6 23 12"></polyline>
+      </symbol>
+      <symbol id="icon-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+        <rect x="9" y="9" width="6" height="6"></rect>
+        <line x1="9" y1="1" x2="9" y2="4"></line>
+        <line x1="15" y1="1" x2="15" y2="4"></line>
+        <line x1="9" y1="20" x2="9" y2="23"></line>
+        <line x1="15" y1="20" x2="15" y2="23"></line>
+        <line x1="20" y1="9" x2="23" y2="9"></line>
+        <line x1="20" y1="14" x2="23" y2="14"></line>
+        <line x1="1" y1="9" x2="4" y2="9"></line>
+        <line x1="1" y1="14" x2="4" y2="14"></line>
+      </symbol>
+      <symbol id="icon-clipboard-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+        <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+        <line x1="8" y1="11" x2="8" y2="11.01"></line>
+        <line x1="12" y1="11" x2="16" y2="11"></line>
+        <line x1="8" y1="15" x2="8" y2="15.01"></line>
+        <line x1="12" y1="15" x2="16" y2="15"></line>
+      </symbol>
+      <symbol id="icon-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+      </symbol>
+      <symbol id="icon-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+      </symbol>
+    </svg>
+
+    <!-- Кэш-бастинг: обновляйте версию при деплое -->
+    <script src="api.js?v=20260224d"></script>
+    <script>
+        // Проверка загрузки api.js
+        if (typeof api === 'undefined') {
+            console.error('api.js не загружен!');
+        } else {
+            console.log('api.js загружен');
+        }
+    </script>
+    <script src="app.js?v=20260224d"></script>
+</body>
+</html>

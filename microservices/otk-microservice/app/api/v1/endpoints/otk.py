@@ -1,0 +1,742 @@
+import logging, time, random, string
+from typing import Optional, List
+from datetime import datetime
+from fastapi import APIRouter, Request, HTTPException
+from sqlalchemy import select, update, delete, func, text, or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from pydantic import BaseModel, Field
+
+from app.models.otk import (
+    OtkBatch, DefectRecord as DefectRecordModel, ScRepair, OtkDefectType, DefectCategory,
+    OtkRegulationProblem, OtkRegulationMeasurement,
+    OtkRegulationReplacement, OtkRegulationTool,
+)
+from shared.core.notify import notify_user, notify_roles, notify_managers
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _db(r: Request):
+    return r.state.db
+
+
+def _user(r: Request):
+    u = r.state.current_user
+    if not u:
+        raise HTTPException(401, "Не авторизован")
+    return u
+
+
+def _perm(r: Request, p: str):
+    u = _user(r)
+    if u.role == "admin":
+        return u
+    if not (u.user_permissions or {}).get(p):
+        raise HTTPException(403, f"Недостаточно прав: {p}")
+    return u
+
+
+def _op_id(prefix: str) -> str:
+    return f"{prefix}-{int(time.time()*1000)}-{''.join(random.choices(string.ascii_lowercase,k=6))}"
+
+def _m(obj) -> dict:
+    return {c.key: getattr(obj, c.key) for c in obj.__mapper__.column_attrs}
+
+
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
+class DefectRecord(BaseModel):
+    quantity: int
+    comment: Optional[str] = None
+    designator: Optional[str] = None
+    defect_type_id: Optional[int] = None
+    category_id: Optional[int] = None
+
+
+class OtkCheckRequest(BaseModel):
+    batchId: str
+    otkId: str
+    result: Optional[int] = None
+    defect_comment: Optional[str] = None
+    rejection_photo_url: Optional[str] = None
+    records: Optional[List[DefectRecord]] = None
+    good_qty: Optional[int] = None
+    defect_qty: Optional[int] = None
+    good: Optional[int] = None
+    defect: Optional[int] = None
+    is_firmware_done: Optional[bool] = None
+    firmware_qty: Optional[int] = None
+    firmware_version: Optional[str] = None
+    # ОТК может указать, на какой отдел/этап вернуть брак (stage_type или id этапа).
+    # Если не указан — авто-выбор последнего завершённого производственного этапа.
+    rework_stage_type: Optional[str] = None
+    rework_stage_id: Optional[int] = None
+
+
+class ShipmentItem(BaseModel):
+    batchId: str
+    qty: int = Field(gt=0)   # запрет 0/отрицательного кол-ва (иначе можно «разотгрузить»)
+    shipperId: str
+    invoiceNumber: Optional[str] = None
+    recipient: Optional[str] = None
+
+
+class ShipPartialRequest(BaseModel):
+    shipments: List[ShipmentItem]
+
+
+class RegulationProblem(BaseModel):
+    product_name: str
+    problem: str
+    solution: str
+
+
+class RegulationMeasurement(BaseModel):
+    product_name: str
+    point_name: str
+    expected_value: Optional[str] = None
+    unit: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class RegulationReplacement(BaseModel):
+    product_name: str
+    original_component: str
+    replacement: str
+    comment: Optional[str] = None
+
+
+class RegulationTool(BaseModel):
+    product_name: str
+    tool_name: str
+    comment: Optional[str] = None
+
+
+# ── Batches ───────────────────────────────────────────────────────────────────
+
+@router.get("/otk/batches")
+async def list_batches(request: Request, status: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    q = select(OtkBatch)
+    if status:
+        q = q.where(OtkBatch.status == status)
+    q = q.order_by(OtkBatch.receive_date.desc())
+    result = await db.execute(q)
+    batches = result.scalars().all()
+    rows = []
+    for b in batches:
+        d = _m(b)
+        if b.maker_id:
+            maker = (await db.execute(text(
+                "SELECT name FROM operators WHERE employee_id=:e"
+            ), {"e": b.maker_id})).scalar_one_or_none()
+            d["maker_name"] = maker
+        else:
+            d["maker_name"] = None
+        rows.append(d)
+    return rows
+
+
+@router.delete("/otk/batches/{batch_id}")
+async def delete_batch(batch_id: str, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    result = await db.execute(
+        select(OtkBatch.id, OtkBatch.status).where(OtkBatch.batch_id == batch_id)
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(404, "Партия не найдена")
+    if row.status != "Принята":
+        raise HTTPException(400, "Удалить можно только партии со статусом \"Принята\"")
+    oid = row.id
+    await db.execute(delete(DefectRecordModel).where(DefectRecordModel.otk_batch_id == oid))
+    await db.execute(delete(ScRepair).where(ScRepair.otk_batch_id == oid))
+    await db.execute(delete(OtkBatch).where(OtkBatch.batch_id == batch_id))
+    await db.commit()
+    return {"success": True}
+
+
+@router.post("/otk/check")
+async def otk_check(body: OtkCheckRequest, request: Request):
+    _perm(request, "otk.view")
+    db = _db(request)
+
+    result = await db.execute(select(OtkBatch).where(OtkBatch.batch_id == body.batchId))
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(404, f"Партия {body.batchId} не найдена")
+    if batch.status != "Принята":
+        raise HTTPException(400, f"Партия уже проверена (статус: {batch.status})")
+
+    released = int(batch.released_qty)
+    good_qty, defect_qty, new_status = 0, 0, "готово к отгрузке"
+
+    if body.result is not None:
+        r = body.result
+        if r == 1:
+            good_qty, defect_qty, new_status = released, 0, "готово к отгрузке"
+        elif r == 2:
+            good_qty = body.good_qty or 0
+            defect_qty = body.defect_qty or 0
+            if good_qty + defect_qty != released:
+                raise HTTPException(400, f"Сумма годных ({good_qty}) и брака ({defect_qty}) ≠ выпущенному ({released})")
+            if not body.records:
+                raise HTTPException(400, "При result=2 укажите записи о дефектах")
+            new_status = "готово к отгрузке" if good_qty > 0 else "Передан в СЦ"
+        elif r == 3:
+            good_qty, defect_qty, new_status = 0, released, "брак"
+            if not body.defect_comment:
+                raise HTTPException(400, "При result=3 укажите комментарий")
+        else:
+            raise HTTPException(400, "result должен быть 1, 2 или 3")
+    else:
+        good_qty = body.good or 0
+        defect_qty = body.defect or 0
+        if good_qty + defect_qty != released:
+            raise HTTPException(400, "Сумма годных и брака ≠ выпущенному количеству")
+
+    update_vals: dict = {
+        "good_qty": good_qty, "defect_qty": defect_qty,
+        "status": new_status, "check_date": func.now(), "maker_id": body.otkId,
+    }
+    if body.defect_comment:
+        update_vals["defect_comment"] = body.defect_comment
+    if body.rejection_photo_url:
+        update_vals["rejection_photo_url"] = body.rejection_photo_url
+
+    await db.execute(
+        update(OtkBatch).where(OtkBatch.batch_id == body.batchId).values(**update_vals)
+    )
+
+    if body.result == 2 and body.records:
+        for rec in body.records:
+            if rec.quantity <= 0:
+                continue
+            dr = DefectRecordModel(
+                otk_batch_id=batch.id, defect_category_id=rec.category_id,
+                otk_defect_type_id=rec.defect_type_id, designator=rec.designator,
+                quantity=rec.quantity, comment=rec.comment,
+            )
+            db.add(dr)
+
+    sc_batch_id = None
+    if body.result == 2 and good_qty > 0 and defect_qty > 0:
+        sc_batch_id = body.batchId + "-SC"
+        sc_exists = (await db.execute(text(
+            "SELECT 1 FROM otk_batches WHERE batch_id=:b"
+        ), {"b": sc_batch_id})).scalar_one_or_none()
+        if sc_exists:
+            sc_batch_id = body.batchId + f"-SC-{int(time.time())%10000}"
+        sc = OtkBatch(
+            batch_id=sc_batch_id, product_name=batch.product_name,
+            production_type=batch.production_type, released_qty=defect_qty,
+            good_qty=0, defect_qty=defect_qty, status="Передан в СЦ",
+            maker_id=body.otkId, check_date=datetime.utcnow(),
+            order_id=batch.order_id, defect_comment=body.defect_comment,
+            source_batch_id=batch.source_batch_id or body.batchId,
+            receive_date=datetime.utcnow(),
+        )
+        db.add(sc)
+
+    if batch.order_id:
+        is_defect = body.result == 3 or (body.result == 2 and defect_qty > 0)
+        if is_defect:
+            # Возвращаем заказ на доработку
+            comment_text = body.defect_comment or ""
+            if body.result == 2:
+                comment_text = f"Частичный брак: {defect_qty} шт. {comment_text}"
+            await db.execute(text("""
+                UPDATE orders SET status='Доработка', otk_comment=:c,
+                otk_rejection_photo=:p, otk_attempts=COALESCE(otk_attempts,0)+1, updated_at=NOW()
+                WHERE id=:oid
+            """), {"c": comment_text, "p": body.rejection_photo_url or "", "oid": batch.order_id})
+
+            # Эскалация (#44): при 3+ возвратах с ОТК — отдельное уведомление руководству
+            attempts = (await db.execute(text(
+                "SELECT COALESCE(otk_attempts,0) FROM orders WHERE id=:oid"
+            ), {"oid": batch.order_id})).scalar() or 0
+            if attempts >= 3:
+                await notify_managers(db,
+                    f"⚠ Эскалация: заказ №{batch.order_id} возвращён ОТК {attempts}-й раз",
+                    f"{batch.product_name}: систематический брак. Требуется вмешательство руководителя.",
+                    link=f"/orders/{batch.order_id}", type_="warning")
+
+            await db.execute(text("""
+                UPDATE production_batches SET status='Запланировано', updated_at=NOW()
+                WHERE order_id=:oid AND status='Готов к проверке ОТК'
+            """), {"oid": batch.order_id})
+
+            # Возврат на доработку: реактивируем последний завершённый
+            # ПРОИЗВОДСТВЕННЫЙ этап перед ОТК. next_stage_id ОТК-этапа указывает
+            # вперёд по маршруту (склад/отгрузка) — реактивировать его нельзя,
+            # иначе брак уходит дальше вместо возврата исполнителю.
+            otk_stage = (await db.execute(text("""
+                SELECT id, sort_order FROM order_stages
+                WHERE order_id=:oid AND stage_type='otk' AND status='done'
+                ORDER BY completed_at DESC LIMIT 1
+            """), {"oid": batch.order_id})).mappings().one_or_none()
+
+            rework_stage_id = None
+            # 1) Явный id этапа от ОТК
+            if body.rework_stage_id:
+                rework_stage_id = (await db.execute(text("""
+                    SELECT id FROM order_stages
+                    WHERE id=:sid AND order_id=:oid AND stage_type != 'otk'
+                """), {"sid": body.rework_stage_id, "oid": batch.order_id})).scalar_one_or_none()
+            # 2) Отдел (stage_type), указанный ОТК — берём последний завершённый этап этого типа
+            if not rework_stage_id and body.rework_stage_type:
+                rework_stage_id = (await db.execute(text("""
+                    SELECT id FROM order_stages
+                    WHERE order_id=:oid AND stage_type=:st AND status='done'
+                    ORDER BY completed_at DESC LIMIT 1
+                """), {"oid": batch.order_id, "st": body.rework_stage_type})).scalar_one_or_none()
+            # 3) Авто-выбор: последний завершённый производственный этап перед ОТК
+            if not rework_stage_id:
+                rework_stage_id = (await db.execute(text("""
+                    SELECT id FROM order_stages
+                    WHERE order_id=:oid AND stage_type != 'otk' AND status='done'
+                      AND (CAST(:max_sort AS INTEGER) IS NULL OR sort_order <= :max_sort)
+                    ORDER BY completed_at DESC LIMIT 1
+                """), {"oid": batch.order_id,
+                       "max_sort": otk_stage["sort_order"] if otk_stage else None}
+                )).scalar_one_or_none()
+
+            if rework_stage_id:
+                await db.execute(text("""
+                    UPDATE order_stages
+                    SET status='pending', started_at=NULL, completed_at=NULL, updated_at=NOW()
+                    WHERE id=:sid
+                """), {"sid": rework_stage_id})
+                # Исполнители этапа снова получают работу (иначе их части остаются «сдано»)
+                await db.execute(text("""
+                    UPDATE stage_assignees
+                    SET status='pending', started_at=NULL, completed_at=NULL, updated_at=NOW()
+                    WHERE stage_id=:sid
+                """), {"sid": rework_stage_id})
+            # ОТК-этап блокируем до повторной сдачи, чтобы маршрут отражал реальность
+            if otk_stage:
+                await db.execute(text("""
+                    UPDATE order_stages
+                    SET status='blocked', started_at=NULL, completed_at=NULL, updated_at=NOW()
+                    WHERE id=:sid
+                """), {"sid": otk_stage["id"]})
+        else:
+            from app.services.order_status import auto_update_order_status
+            await auto_update_order_status(db, batch.order_id)
+
+        # ── Авто-уведомления по результату проверки ─────────────────────────
+        if is_defect:
+            # Исполнители этапов заказа + руководители — о возврате на доработку
+            assignees = (await db.execute(text("""
+                SELECT DISTINCT assigned_to FROM order_stages
+                WHERE order_id=:oid AND assigned_to IS NOT NULL AND assigned_to != ''
+            """), {"oid": batch.order_id})).scalars().all()
+            notify_ids = {str(a) for a in assignees}
+            if rework_stage_id:
+                # Мульти-исполнители реактивированного этапа (stage_assignees)
+                sa_ids = (await db.execute(text(
+                    "SELECT DISTINCT user_id FROM stage_assignees WHERE stage_id=:sid"
+                ), {"sid": rework_stage_id})).scalars().all()
+                notify_ids |= {str(i) for i in sa_ids}
+            msg = f"{batch.product_name}: брак {defect_qty} шт. {body.defect_comment or ''}".strip()
+            for uid in notify_ids:
+                await notify_user(db, uid,
+                                  f"Заказ №{batch.order_id} возвращён на доработку",
+                                  msg, link="/my-tasks", type_="warning")
+            await notify_managers(db,
+                                  f"ОТК: брак по заказу №{batch.order_id}",
+                                  msg, link=f"/orders/{batch.order_id}", type_="warning")
+    if good_qty > 0 and new_status == "готово к отгрузке":
+        await notify_roles(db, ["operator_shipment"],
+                           f"Партия {body.batchId} готова к отгрузке",
+                           f"{batch.product_name} — {good_qty} шт.",
+                           link="/shipment", type_="success")
+
+    await db.commit()
+    return {"success": True, "batchId": body.batchId, "status": new_status,
+            "goodQty": good_qty, "defectQty": defect_qty, "scBatchId": sc_batch_id}
+
+
+# ── Ready to ship / Ship ──────────────────────────────────────────────────────
+
+@router.get("/otk/ready-to-ship")
+async def ready_to_ship(request: Request):
+    _perm(request, "otk.view")
+    db = _db(request)
+    rows = (await db.execute(text("""
+        SELECT o.id, o.product_name, o.planned_qty, o.status,
+               json_agg(json_build_object(
+                 'batch_id', otk.batch_id, 'good_qty', otk.good_qty,
+                 'shipped_qty', COALESCE(otk.shipped_qty,0),
+                 'remaining_qty', otk.good_qty - COALESCE(otk.shipped_qty,0),
+                 'status', otk.status
+               )) as batches
+        FROM orders o
+        JOIN otk_batches otk ON otk.order_id = o.id
+        WHERE otk.status = 'готово к отгрузке'
+          AND NOT EXISTS (
+              SELECT 1 FROM otk_batches b
+              WHERE b.order_id = o.id AND b.status = 'брак'
+          )
+        GROUP BY o.id ORDER BY o.created_at DESC
+    """))).mappings().all()
+    return list(rows)
+
+
+@router.post("/otk/ship-partial")
+async def ship_partial(body: ShipPartialRequest, request: Request):
+    # Отгрузку выполняют: оператор отгрузки, руководители, либо любой с production.edit
+    u = _user(request)
+    if u.role not in ("admin", "manager", "operator_shipment") and not (u.user_permissions or {}).get("production.edit"):
+        raise HTTPException(403, "Недостаточно прав для отгрузки")
+    db = _db(request)
+    shipped = []
+    order_ids = set()
+    for s in body.shipments:
+        # FOR UPDATE: блокируем строку, чтобы параллельные частичные отгрузки
+        # одной партии не перезаписали shipped_qty (read-then-write гонка).
+        result = await db.execute(
+            select(OtkBatch).where(OtkBatch.batch_id == s.batchId).with_for_update()
+        )
+        batch = result.scalar_one_or_none()
+        if not batch:
+            raise HTTPException(404, f"Партия {s.batchId} не найдена")
+        if batch.status != "готово к отгрузке":
+            raise HTTPException(400, f"Партия {s.batchId} не готова к отгрузке")
+        # Заказ с незакрытым браком держим целиком — годную партию тоже не отгружаем,
+        # пока брак не переделают (status-машина держит заказ в «Доработка»).
+        if batch.order_id:
+            has_brak = (await db.execute(text(
+                "SELECT 1 FROM otk_batches WHERE order_id=:oid AND status='брак' LIMIT 1"
+            ), {"oid": batch.order_id})).scalar_one_or_none()
+            if has_brak:
+                raise HTTPException(
+                    400, f"Заказ №{batch.order_id} на доработке (есть брак) — отгрузка заблокирована, "
+                         "пока брак не будет переделан")
+        good = int(batch.good_qty)
+        already = int(batch.shipped_qty or 0)
+        remaining = good - already
+        if s.qty > remaining:
+            raise HTTPException(400, f"Нельзя отгрузить {s.qty} из {s.batchId}. Доступно: {remaining}")
+        new_shipped = already + s.qty
+        is_full = new_shipped >= good
+        update_vals: dict = {"shipped_qty": new_shipped, "shipper_id": s.shipperId}
+        if s.invoiceNumber:
+            update_vals["invoice_number"] = s.invoiceNumber
+        if s.recipient:
+            update_vals["recipient"] = s.recipient
+        if is_full:
+            update_vals["status"] = "отгружено"
+            update_vals["ship_date"] = func.now()
+        await db.execute(
+            update(OtkBatch).where(OtkBatch.batch_id == s.batchId).values(**update_vals)
+        )
+        shipped.append({"batchId": s.batchId, "qty": s.qty,
+                        "remainingQty": good - new_shipped, "isFullyShipped": is_full})
+        if batch.order_id:
+            order_ids.add(batch.order_id)
+    for oid in order_ids:
+        from app.services.order_status import auto_update_order_status
+        await auto_update_order_status(db, oid)
+    await db.commit()
+    return {"success": True, "shippedBatches": shipped}
+
+
+# ── Reports ───────────────────────────────────────────────────────────────────
+
+@router.get("/otk/reports")
+async def reports(request: Request, date_from: Optional[str] = None, date_to: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    df = date_from or datetime.utcnow().replace(day=1).strftime("%Y-%m-%d")
+    dt = date_to or datetime.utcnow().strftime("%Y-%m-%d")
+    q = (
+        select(OtkBatch)
+        .where(OtkBatch.status != "Принята", OtkBatch.check_date.isnot(None))
+        .where(func.date(OtkBatch.check_date) >= df)
+        .where(func.date(OtkBatch.check_date) <= dt)
+        .order_by(OtkBatch.check_date.desc())
+    )
+    result = await db.execute(q)
+    batches_objs = result.scalars().all()
+    batches = []
+    for b in batches_objs:
+        d = _m(b)
+        if b.maker_id:
+            maker = (await db.execute(text(
+                "SELECT name FROM operators WHERE employee_id=:e"
+            ), {"e": b.maker_id})).scalar_one_or_none()
+            d["maker_name"] = maker
+        else:
+            d["maker_name"] = None
+        batches.append(d)
+    total_good = sum(int(b["good_qty"] or 0) for b in batches)
+    total_defect = sum(int(b["defect_qty"] or 0) for b in batches)
+    total = total_good + total_defect
+    return {
+        "date_from": df, "date_to": dt,
+        "summary": {"total_batches": len(batches), "total_good": total_good,
+                    "total_defect": total_defect,
+                    "quality_rate": round(100 * total_good / total) if total else 100},
+        "batches": batches,
+    }
+
+
+@router.delete("/otk/reports/batch/{batch_id}")
+async def delete_report_batch(batch_id: str, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    result = await db.execute(select(OtkBatch.id).where(OtkBatch.batch_id == batch_id))
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Партия не найдена")
+    oid = row
+    await db.execute(delete(DefectRecordModel).where(DefectRecordModel.otk_batch_id == oid))
+    await db.execute(delete(ScRepair).where(ScRepair.otk_batch_id == oid))
+    await db.execute(delete(OtkBatch).where(OtkBatch.batch_id == batch_id))
+    await db.commit()
+    return {"success": True}
+
+
+# ── Defect types ──────────────────────────────────────────────────────────────
+
+DEFECT_TYPES_FALLBACK = [
+    {"id": 1, "category": "Компоновка", "subdescription": "Отсутствие компонента"},
+    {"id": 2, "category": "Компоновка", "subdescription": "Неверный компонент"},
+    {"id": 3, "category": "Пайка (мало)", "subdescription": "Непропай"},
+    {"id": 4, "category": "Пайка (много)", "subdescription": "Избыток припоя"},
+    {"id": 5, "category": "Мосты", "subdescription": "Слипшиеся ножки"},
+    {"id": 6, "category": "Полярность", "subdescription": "Неверная постановка ключа"},
+    {"id": 7, "category": "Механика", "subdescription": "Повреждение компонента"},
+    {"id": 8, "category": "Прошивка", "subdescription": "Не прошивается"},
+    {"id": 9, "category": "Связь", "subdescription": "Не биндится"},
+]
+
+
+@router.get("/otk/defect-types")
+async def defect_types(request: Request):
+    _perm(request, "otk.view")
+    db = _db(request)
+    try:
+        result = await db.execute(
+            select(OtkDefectType).order_by(OtkDefectType.sort_order, OtkDefectType.category, OtkDefectType.id)
+        )
+        rows = result.scalars().all()
+        return [_m(r) for r in rows] if rows else DEFECT_TYPES_FALLBACK
+    except Exception:
+        logger.exception("Не удалось загрузить типы дефектов из БД, используется fallback")
+        return DEFECT_TYPES_FALLBACK
+
+
+@router.get("/otk/defect-categories")
+async def defect_categories(request: Request):
+    _perm(request, "otk.view")
+    db = _db(request)
+    try:
+        result = await db.execute(
+            select(DefectCategory)
+            .where(DefectCategory.is_active == True)
+            .order_by(DefectCategory.name)
+        )
+        return [_m(r) for r in result.scalars().all()]
+    except Exception:
+        logger.exception("Запрос справочника ОТК не выполнен")
+        return []
+
+
+# ── Regulations ───────────────────────────────────────────────────────────────
+
+@router.get("/otk/regulations/products")
+async def regulation_products(request: Request):
+    _perm(request, "otk.view")
+    db = _db(request)
+    rows = (await db.execute(text(
+        "SELECT DISTINCT product_name FROM recipes WHERE product_name IS NOT NULL ORDER BY product_name"
+    ))).all()
+    return [r[0] for r in rows]
+
+
+@router.get("/otk/regulations/problems")
+async def regulation_problems(request: Request, product: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    q = select(OtkRegulationProblem).order_by(
+        OtkRegulationProblem.product_name, OtkRegulationProblem.sort_order, OtkRegulationProblem.id
+    )
+    if product:
+        q = q.where(func.lower(func.trim(OtkRegulationProblem.product_name)) == product.strip().lower())
+    try:
+        result = await db.execute(q)
+        return [_m(r) for r in result.scalars().all()]
+    except Exception:
+        logger.exception("Запрос справочника ОТК не выполнен")
+        return []
+
+
+@router.post("/otk/regulations/problems", status_code=201)
+async def create_problem(body: RegulationProblem, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    max_sort = (await db.execute(
+        select(func.max(OtkRegulationProblem.sort_order))
+        .where(func.lower(func.trim(OtkRegulationProblem.product_name)) == body.product_name.strip().lower())
+    )).scalar_one_or_none()
+    item = OtkRegulationProblem(
+        product_name=body.product_name.strip(), problem=body.problem.strip(),
+        solution=body.solution.strip(), sort_order=(max_sort + 1) if max_sort is not None else 0,
+    )
+    db.add(item)
+    await db.flush()
+    await db.refresh(item)
+    await db.commit()
+    return _m(item)
+
+
+@router.put("/otk/regulations/problems/{item_id}")
+async def update_problem(item_id: int, body: RegulationProblem, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    stmt = (
+        update(OtkRegulationProblem)
+        .where(OtkRegulationProblem.id == item_id)
+        .values(problem=body.problem.strip(), solution=body.solution.strip(), updated_at=func.now())
+        .returning(OtkRegulationProblem)
+    )
+    row = (await db.execute(stmt)).mappings().one_or_none()
+    if not row: raise HTTPException(404, "Запись не найдена")
+    await db.commit()
+    return dict(row)
+
+
+@router.delete("/otk/regulations/problems/{item_id}")
+async def delete_problem(item_id: int, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    await db.execute(delete(OtkRegulationProblem).where(OtkRegulationProblem.id == item_id))
+    await db.commit()
+    return {"success": True}
+
+
+@router.get("/otk/regulations/measurements")
+async def regulation_measurements(request: Request, product: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    q = select(OtkRegulationMeasurement).order_by(
+        OtkRegulationMeasurement.sort_order, OtkRegulationMeasurement.id
+    )
+    if product:
+        q = q.where(func.lower(func.trim(OtkRegulationMeasurement.product_name)) == product.strip().lower())
+    try:
+        result = await db.execute(q)
+        return [_m(r) for r in result.scalars().all()]
+    except Exception:
+        logger.exception("Запрос справочника ОТК не выполнен")
+        return []
+
+
+@router.post("/otk/regulations/measurements", status_code=201)
+async def create_measurement(body: RegulationMeasurement, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    item = OtkRegulationMeasurement(
+        product_name=body.product_name.strip(), point_name=body.point_name.strip(),
+        expected_value=body.expected_value, unit=body.unit, comment=body.comment,
+    )
+    db.add(item)
+    await db.flush()
+    await db.refresh(item)
+    await db.commit()
+    return _m(item)
+
+
+@router.delete("/otk/regulations/measurements/{item_id}")
+async def delete_measurement(item_id: int, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    await db.execute(delete(OtkRegulationMeasurement).where(OtkRegulationMeasurement.id == item_id))
+    await db.commit()
+    return {"success": True}
+
+
+@router.get("/otk/regulations/replacements")
+async def regulation_replacements(request: Request, product: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    q = select(OtkRegulationReplacement).order_by(
+        OtkRegulationReplacement.sort_order, OtkRegulationReplacement.id
+    )
+    if product:
+        q = q.where(func.lower(func.trim(OtkRegulationReplacement.product_name)) == product.strip().lower())
+    try:
+        result = await db.execute(q)
+        return [_m(r) for r in result.scalars().all()]
+    except Exception:
+        logger.exception("Запрос справочника ОТК не выполнен")
+        return []
+
+
+@router.post("/otk/regulations/replacements", status_code=201)
+async def create_replacement(body: RegulationReplacement, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    item = OtkRegulationReplacement(
+        product_name=body.product_name.strip(),
+        original_component=body.original_component.strip(),
+        replacement=body.replacement.strip(), comment=body.comment,
+    )
+    db.add(item)
+    await db.flush()
+    await db.refresh(item)
+    await db.commit()
+    return _m(item)
+
+
+@router.delete("/otk/regulations/replacements/{item_id}")
+async def delete_replacement(item_id: int, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    await db.execute(delete(OtkRegulationReplacement).where(OtkRegulationReplacement.id == item_id))
+    await db.commit()
+    return {"success": True}
+
+
+@router.get("/otk/regulations/tools")
+async def regulation_tools(request: Request, product: Optional[str] = None):
+    _perm(request, "otk.view")
+    db = _db(request)
+    q = select(OtkRegulationTool).order_by(OtkRegulationTool.sort_order, OtkRegulationTool.id)
+    if product:
+        q = q.where(func.lower(func.trim(OtkRegulationTool.product_name)) == product.strip().lower())
+    try:
+        result = await db.execute(q)
+        return [_m(r) for r in result.scalars().all()]
+    except Exception:
+        logger.exception("Запрос справочника ОТК не выполнен")
+        return []
+
+
+@router.post("/otk/regulations/tools", status_code=201)
+async def create_tool(body: RegulationTool, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    item = OtkRegulationTool(
+        product_name=body.product_name.strip(),
+        tool_name=body.tool_name.strip(), comment=body.comment,
+    )
+    db.add(item)
+    await db.flush()
+    await db.refresh(item)
+    await db.commit()
+    return _m(item)
+
+
+@router.delete("/otk/regulations/tools/{item_id}")
+async def delete_tool(item_id: int, request: Request):
+    _perm(request, "production.edit")
+    db = _db(request)
+    await db.execute(delete(OtkRegulationTool).where(OtkRegulationTool.id == item_id))
+    await db.commit()
+    return {"success": True}

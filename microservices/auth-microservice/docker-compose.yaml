@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  auth:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@db:5432/crm_production
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      - db
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: crm_production
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../crm-copy/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  pgdata:
