@@ -115,6 +115,7 @@ export default function OrdersPage() {
 
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
+  const [managers, setManagers] = useState<string[]>([]);
   const [stageAssignments, setStageAssignments] = useState<Record<number, string>>({});
   const [skippedStages, setSkippedStages] = useState<Set<number>>(new Set());
   const [productStages, setProductStages] = useState<RecipeStage[]>([]);
@@ -246,6 +247,7 @@ export default function OrdersPage() {
         stage_assignments: Object.keys(activeAssignments).length > 0 ? activeAssignments : undefined,
         skipped_stage_ids: skippedStages.size > 0 ? Array.from(skippedStages) : undefined,
       };
+      if (managers.length > 0) payload.managers = managers;
       if (!payload.assigned_operator_id) delete payload.assigned_operator_id;
       if (!payload.stage_assignments) delete payload.stage_assignments;
       if (!payload.skipped_stage_ids) delete payload.skipped_stage_ids;
@@ -268,7 +270,7 @@ export default function OrdersPage() {
       }
       await api.createOrder(payload as Partial<Order>);
       setShowCreate(false);
-      setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
+      setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" }); setManagers([]);
       setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
       setUseCanonical(false); setCanonFlags({ needs_smd: true, is_receiver: false, needs_assembly: true });
       load();
@@ -551,7 +553,7 @@ export default function OrdersPage() {
           {hasPermission("orders.create") && (
             <Button onClick={() => {
               setShowCreate(true); setError("");
-              setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
+              setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" }); setManagers([]);
               setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
             }}>{t("orders.create")}</Button>
           )}
@@ -891,6 +893,27 @@ export default function OrdersPage() {
           <div>
             <label>Комментарий</label>
             <textarea value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} rows={2} />
+          </div>
+
+          {/* Руководители проекта — кому пойдёт заказ. Только они печатают наряд и закрывают заказ. */}
+          <div>
+            <label>Руководители проекта {managers.length > 0 && <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>· выбрано {managers.length}</span>}</label>
+            <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 6 }}>
+              {allUsers.filter(u => u.is_active).length === 0 && <div style={{ fontSize: 12, color: "var(--text-muted)", padding: 6 }}>Нет пользователей</div>}
+              {allUsers.filter(u => u.is_active).map(u => {
+                const id = String(u.id);
+                const checked = managers.includes(id);
+                return (
+                  <label key={u.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer", fontSize: 13, borderRadius: 6 }}>
+                    <input type="checkbox" checked={checked}
+                      onChange={() => setManagers(m => checked ? m.filter(x => x !== id) : [...m, id])} />
+                    <span>{u.full_name || u.username}</span>
+                    {(u.role === "admin" || u.role === "manager") && <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: "auto" }}>{ROLE_LABELS[u.role] || u.role}</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Печать наряда и закрытие заказа доступны только руководителям проекта (или администратору).</div>
           </div>
 
           {/* Канонический маршрут по ТЗ (12 этапов) */}

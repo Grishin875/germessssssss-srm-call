@@ -5,6 +5,9 @@ from app.schemas.warehouse import (
     ComponentCreate, ComponentUpdate, ComponentOut,
     BatchOperationRequest, OperationOut, ProductionStockOut,
     CaseCreate, CaseUpdate, CaseOut, ReserveForOrderRequest,
+    WarehouseCreate, WarehouseUpdate, WarehouseOut, WarehouseStockOut, StockTransferRequest,
+    SupplierCreate, SupplierUpdate, SupplierOut,
+    PurchaseRequestCreate, PurchaseRequestUpdate, PurchaseRequestOut, FromShortageRequest,
 )
 from app.services import warehouse_service
 
@@ -169,6 +172,164 @@ async def reserve_for_order(body: ReserveForOrderRequest, request: Request):
         return await warehouse_service.reserve_for_order(_db(request), body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Warehouses (мультисклад) ──────────────────────────────────────────────────
+
+@router.get("/warehouses", response_model=List[WarehouseOut])
+async def list_warehouses(request: Request, include_inactive: bool = False):
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.list_warehouses(_db(request), include_inactive=include_inactive)
+
+
+@router.post("/warehouses", response_model=WarehouseOut, status_code=201)
+async def create_warehouse(body: WarehouseCreate, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.create_warehouse(_db(request), body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/warehouses/{wid}", response_model=WarehouseOut)
+async def update_warehouse(wid: int, body: WarehouseUpdate, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.update_warehouse(_db(request), wid, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/warehouses/{wid}")
+async def delete_warehouse(wid: int, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        await warehouse_service.delete_warehouse(_db(request), wid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True}
+
+
+@router.get("/warehouses/{wid}/stock", response_model=List[WarehouseStockOut])
+async def warehouse_stock(wid: int, request: Request):
+    _require_perm(request, "warehouse.view")
+    try:
+        return await warehouse_service.get_warehouse_stock(_db(request), wid)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/stock/by-component/{component_name}", response_model=List[WarehouseStockOut])
+async def component_distribution(component_name: str, request: Request):
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.get_component_distribution(_db(request), component_name)
+
+
+@router.post("/warehouses/transfer")
+async def transfer_stock(body: StockTransferRequest, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.transfer_stock(_db(request), body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Закупка: поставщики ───────────────────────────────────────────────────────
+
+@router.get("/suppliers", response_model=List[SupplierOut])
+async def list_suppliers(request: Request, include_inactive: bool = False):
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.list_suppliers(_db(request), include_inactive=include_inactive)
+
+
+@router.post("/suppliers", response_model=SupplierOut, status_code=201)
+async def create_supplier(body: SupplierCreate, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.create_supplier(_db(request), body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/suppliers/{sid}", response_model=SupplierOut)
+async def update_supplier(sid: int, body: SupplierUpdate, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.update_supplier(_db(request), sid, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/suppliers/{sid}")
+async def delete_supplier(sid: int, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        await warehouse_service.delete_supplier(_db(request), sid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True}
+
+
+# ── Закупка: заявки ───────────────────────────────────────────────────────────
+
+@router.get("/purchase-requests", response_model=List[PurchaseRequestOut])
+async def list_purchase_requests(request: Request, status: Optional[str] = None):
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.list_purchase_requests(_db(request), status=status)
+
+
+@router.get("/purchase-requests/{pid}", response_model=PurchaseRequestOut)
+async def get_purchase_request(pid: int, request: Request):
+    _require_perm(request, "warehouse.view")
+    try:
+        return await warehouse_service.get_purchase_request(_db(request), pid)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/purchase-requests", response_model=PurchaseRequestOut, status_code=201)
+async def create_purchase_request(body: PurchaseRequestCreate, request: Request):
+    user = _require_perm(request, "warehouse.edit")
+    return await warehouse_service.create_purchase_request(
+        _db(request), body, created_by=getattr(user, "username", None))
+
+
+@router.post("/purchase-requests/from-shortage", response_model=PurchaseRequestOut, status_code=201)
+async def purchase_from_shortage(body: FromShortageRequest, request: Request):
+    user = _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.create_from_shortage(
+            _db(request), body, created_by=getattr(user, "username", None))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/purchase-requests/{pid}", response_model=PurchaseRequestOut)
+async def update_purchase_request(pid: int, body: PurchaseRequestUpdate, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.update_purchase_request(_db(request), pid, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/purchase-requests/{pid}/receive", response_model=PurchaseRequestOut)
+async def receive_purchase_request(pid: int, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.receive_purchase_request(_db(request), pid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/purchase-requests/{pid}")
+async def delete_purchase_request(pid: int, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        await warehouse_service.delete_purchase_request(_db(request), pid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True}
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────

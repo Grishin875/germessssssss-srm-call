@@ -222,6 +222,17 @@ export default function OrderDetailPage() {
     setStarting(false);
   }
 
+  async function closeOrder() {
+    if (!order) return;
+    if (!confirm(`Закрыть заказ №${order.id} «${order.product_name}»? Действие завершит заказ.`)) return;
+    try {
+      await api.closeOrder(order.id);
+      const o = await api.getOrder(id);
+      setOrder(o);
+      toast.success("Заказ закрыт");
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
+
   async function openAssign(stage: OrderStage) {
     setAssignStage(stage);
     setAssignOpId(stage.assigned_to || "");
@@ -484,24 +495,35 @@ export default function OrderDetailPage() {
             </span>
           )}
           <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => router.push(`/chat?order=${order.id}`)}>💬 Чат заказа</Button>
-          <Button variant="secondary" size="sm" onClick={() => printRouteSheet({
-            orderId: order.id,
-            productName: order.product_name,
-            plannedQty: order.planned_qty,
-            priority: order.priority,
-            deadline: order.deadline,
-            department: order.assigned_department,
-            comment: order.comment,
-            createdAt: order.created_at,
-            stages: stages.map((s, i) => ({
-              idx: i + 1,
-              name: s.stage_name || STAGE_TYPE_LABELS[s.stage_type]?.label || s.stage_type,
-              type: STAGE_TYPE_LABELS[s.stage_type]?.label || s.stage_type,
-              status: STATUS_STAGE[s.status]?.label || s.status,
-              assignees: (stageAssignees[s.id] ?? []).map(a => a.user_name || `#${a.user_id}`),
-            })),
-          })}>🖨 Маршрутный лист</Button>
+          {order.can_close && (
+            <Button variant="secondary" size="sm" onClick={() => printRouteSheet({
+              orderId: order.id,
+              productName: order.product_name,
+              plannedQty: order.planned_qty,
+              priority: order.priority,
+              deadline: order.deadline,
+              department: order.assigned_department,
+              comment: order.comment,
+              createdAt: order.created_at,
+              stages: stages.map((s, i) => ({
+                idx: i + 1,
+                name: s.stage_name || STAGE_TYPE_LABELS[s.stage_type]?.label || s.stage_type,
+                type: STAGE_TYPE_LABELS[s.stage_type]?.label || s.stage_type,
+                status: STATUS_STAGE[s.status]?.label || s.status,
+                assignees: (stageAssignees[s.id] ?? []).map(a => a.user_name || `#${a.user_id}`),
+              })),
+            })}>🖨 Наряд</Button>
+          )}
+          {order.can_close && !["Завершен", "Завершён", "Отменен", "Отменён"].includes(order.status) && (
+            <Button variant="success" size="sm" onClick={closeOrder}>✓ Закрыть заказ</Button>
+          )}
         </div>
+        {order.manager_names && order.manager_names.length > 0 && (
+          <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            <span style={{ color: "var(--text-muted)" }}>Руководители проекта: </span>
+            {order.manager_names.join(", ")}
+          </div>
+        )}
 
         {order.status === "Доработка" && order.otk_comment && (
           <div style={{ padding: "14px 18px", borderRadius: 10, background: "#ef444415", border: "1px solid #ef444440" }}>

@@ -1,6 +1,55 @@
-from sqlalchemy import Column, Integer, String, Numeric, Text, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Numeric, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 from shared.core.database import Base
+
+# Типы складов (перенесено из Django-CRM apps/warehouse)
+WAREHOUSE_TYPES = ("main", "smd", "rea", "finished", "defect")
+WAREHOUSE_TYPE_LABELS = {
+    "main":     "Основной склад",
+    "smd":      "Склад СМД",
+    "rea":      "Склад РЭА",
+    "finished": "Склад готовой продукции",
+    "defect":   "Склад брака",
+}
+# Дефолтный набор складов, заводится при старте сервиса
+DEFAULT_WAREHOUSES = [
+    {"code": "MAIN", "name": "Основной склад",            "warehouse_type": "main"},
+    {"code": "SMD",  "name": "Склад СМД",                 "warehouse_type": "smd"},
+    {"code": "REA",  "name": "Склад РЭА",                 "warehouse_type": "rea"},
+    {"code": "FG",   "name": "Склад готовой продукции",   "warehouse_type": "finished"},
+    {"code": "DEF",  "name": "Склад брака",               "warehouse_type": "defect"},
+]
+
+
+class Warehouse(Base):
+    __tablename__ = "warehouses"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)
+    name = Column(String(200), nullable=False)
+    warehouse_type = Column(String(20), default="main")   # main | smd | rea | finished | defect
+    address = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class WarehouseStock(Base):
+    """Остаток компонента на конкретном складе.
+
+    Связь с компонентом — по имени (как и везде в germess). Инвариант:
+    сумма quantity по всем складам для компонента == warehouse_components.stock.
+    Поддерживается reconcile-ом (излишек/недостаток относят на Основной склад).
+    """
+    __tablename__ = "warehouse_stock"
+    __table_args__ = (UniqueConstraint("warehouse_id", "component_name", name="uq_warehouse_component"),)
+
+    id = Column(Integer, primary_key=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False)
+    component_name = Column(String(255), nullable=False)
+    quantity = Column(Numeric(15, 3), default=0)
+    reserved = Column(Numeric(15, 3), default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 # source values: warehouse | smd | engraving | 3d_print | purchase
 SOURCE_VALUES = ("warehouse", "smd", "engraving", "3d_print", "purchase")
@@ -76,3 +125,55 @@ class Case(Base):
     comment = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# ── Закупка (procurement) ─────────────────────────────────────────────────────
+PURCHASE_STATUSES = ("draft", "ordered", "received", "cancelled")
+PURCHASE_STATUS_LABELS = {
+    "draft":     "Черновик",
+    "ordered":   "Заказано",
+    "received":  "Получено",
+    "cancelled": "Отменено",
+}
+
+
+class Supplier(Base):
+    """Поставщик."""
+    __tablename__ = "suppliers"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    contact = Column(String(255))
+    phone = Column(String(100))
+    email = Column(String(255))
+    note = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PurchaseRequest(Base):
+    """Заявка на закупку. Статусы: draft → ordered → received (+ cancelled)."""
+    __tablename__ = "purchase_requests"
+
+    id = Column(Integer, primary_key=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id", ondelete="SET NULL"))
+    status = Column(String(30), default="draft")
+    note = Column(Text)
+    order_ref = Column(String(100))          # связанный заказ производства (опц.)
+    created_by = Column(String(100))
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PurchaseRequestItem(Base):
+    """Позиция заявки на закупку."""
+    __tablename__ = "purchase_request_items"
+
+    id = Column(Integer, primary_key=True)
+    request_id = Column(Integer, ForeignKey("purchase_requests.id", ondelete="CASCADE"), nullable=False)
+    component_name = Column(String(255), nullable=False)
+    quantity = Column(Numeric(15, 3), default=0)
+    received_qty = Column(Numeric(15, 3), default=0)
+    unit_price = Column(Numeric(15, 2))
+    note = Column(Text)

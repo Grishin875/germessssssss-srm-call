@@ -165,6 +165,67 @@ export const api = {
     });
   },
 
+  // ── Warehouses (мультисклад) ──────────────────────────────────────────────
+  async getWarehouses(includeInactive = false) {
+    return request<Warehouse[]>(`/api/warehouse/warehouses${includeInactive ? "?include_inactive=true" : ""}`);
+  },
+  async createWarehouse(data: Partial<Warehouse>) {
+    return request<Warehouse>("/api/warehouse/warehouses", { method: "POST", body: JSON.stringify(data) });
+  },
+  async updateWarehouse(id: number, data: Partial<Warehouse>) {
+    return request<Warehouse>(`/api/warehouse/warehouses/${id}`, { method: "PUT", body: JSON.stringify(data) });
+  },
+  async deleteWarehouse(id: number) {
+    return request(`/api/warehouse/warehouses/${id}`, { method: "DELETE" });
+  },
+  async getWarehouseStock(id: number) {
+    return request<WarehouseStockRow[]>(`/api/warehouse/warehouses/${id}/stock`);
+  },
+  async getComponentDistribution(name: string) {
+    return request<WarehouseStockRow[]>(`/api/warehouse/stock/by-component/${encodeURIComponent(name)}`);
+  },
+  async transferStock(data: { component_name: string; from_warehouse_id: number; to_warehouse_id: number; quantity: number; note?: string }) {
+    return request<{ success: boolean; from: string; to: string }>("/api/warehouse/warehouses/transfer", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  // ── Закупка (procurement) ─────────────────────────────────────────────────
+  async getSuppliers(includeInactive = false) {
+    return request<Supplier[]>(`/api/warehouse/suppliers${includeInactive ? "?include_inactive=true" : ""}`);
+  },
+  async createSupplier(data: Partial<Supplier>) {
+    return request<Supplier>("/api/warehouse/suppliers", { method: "POST", body: JSON.stringify(data) });
+  },
+  async updateSupplier(id: number, data: Partial<Supplier>) {
+    return request<Supplier>(`/api/warehouse/suppliers/${id}`, { method: "PUT", body: JSON.stringify(data) });
+  },
+  async deleteSupplier(id: number) {
+    return request(`/api/warehouse/suppliers/${id}`, { method: "DELETE" });
+  },
+  async getPurchaseRequests(status?: string) {
+    return request<PurchaseRequest[]>(`/api/warehouse/purchase-requests${status ? "?status=" + status : ""}`);
+  },
+  async getPurchaseRequest(id: number) {
+    return request<PurchaseRequest>(`/api/warehouse/purchase-requests/${id}`);
+  },
+  async createPurchaseRequest(data: { supplier_id?: number | null; note?: string; order_ref?: string; items: PurchaseItemIn[] }) {
+    return request<PurchaseRequest>("/api/warehouse/purchase-requests", { method: "POST", body: JSON.stringify(data) });
+  },
+  async updatePurchaseRequest(id: number, data: { supplier_id?: number | null; status?: string; note?: string; order_ref?: string; items?: PurchaseItemIn[] }) {
+    return request<PurchaseRequest>(`/api/warehouse/purchase-requests/${id}`, { method: "PUT", body: JSON.stringify(data) });
+  },
+  async receivePurchaseRequest(id: number) {
+    return request<PurchaseRequest>(`/api/warehouse/purchase-requests/${id}/receive`, { method: "POST" });
+  },
+  async deletePurchaseRequest(id: number) {
+    return request(`/api/warehouse/purchase-requests/${id}`, { method: "DELETE" });
+  },
+  async purchaseFromShortage(data: { items: { component_name: string; quantity: number }[]; supplier_id?: number | null; order_ref?: string; note?: string }) {
+    return request<PurchaseRequest>("/api/warehouse/purchase-requests/from-shortage", { method: "POST", body: JSON.stringify(data) });
+  },
+
   // ── Orders ──────────────────────────────────────────────────────────────────
   async getOrders(status?: string, search?: string, includeStatuses?: string, cf?: { field: number; value: string }) {
     const p = new URLSearchParams();
@@ -197,6 +258,15 @@ export const api = {
   },
   async deleteOrder(id: number) {
     return request(`/api/orders/${id}`, { method: "DELETE" });
+  },
+  async closeOrder(id: number) {
+    return request<{ success: boolean; status: string }>(`/api/orders/${id}/close`, { method: "POST" });
+  },
+  async calculateOrderDemand(productName: string, plannedQty: number, productionType?: string) {
+    return request<OrderDemandResult>("/api/recipes/calculate-order-demand", {
+      method: "POST",
+      body: JSON.stringify({ product_name: productName, planned_qty: plannedQty, production_type: productionType }),
+    });
   },
   async startOrder(id: number, operatorId?: string) {
     return request(`/api/orders/${id}/start`, { method: "POST", body: JSON.stringify({ operator_id: operatorId }) });
@@ -817,6 +887,87 @@ export interface Component {
   source?: string;
 }
 
+export interface Warehouse {
+  id: number;
+  code: string;
+  name: string;
+  warehouse_type: string;   // main | smd | rea | finished | defect
+  type_label?: string;
+  address?: string;
+  is_active: boolean;
+  positions_count?: number;
+  total_quantity?: number;
+}
+
+export interface WarehouseStockRow {
+  warehouse_id: number;
+  warehouse_name?: string;
+  warehouse_type?: string;
+  component_name: string;
+  quantity: number;
+  reserved: number;
+  available: number;
+}
+
+export interface OrderDemandComponent {
+  component_name: string;
+  production_type: string;
+  source: string;
+  norm: number;
+  required: number;
+  available: number;
+  shortage: number;
+  canProduce: boolean;
+}
+
+export interface OrderDemandResult {
+  canProduce: boolean;
+  message?: string;
+  components: OrderDemandComponent[];
+  by_department: Record<string, OrderDemandComponent[]>;
+}
+
+export interface Supplier {
+  id: number;
+  name: string;
+  contact?: string;
+  phone?: string;
+  email?: string;
+  note?: string;
+  is_active: boolean;
+}
+
+export interface PurchaseItemIn {
+  component_name: string;
+  quantity: number;
+  unit_price?: number | null;
+  note?: string;
+}
+
+export interface PurchaseItemOut {
+  id: number;
+  component_name: string;
+  quantity: number;
+  received_qty: number;
+  unit_price?: number | null;
+  note?: string;
+}
+
+export interface PurchaseRequest {
+  id: number;
+  supplier_id?: number | null;
+  supplier_name?: string | null;
+  status: string;            // draft | ordered | received | cancelled
+  status_label: string;
+  note?: string;
+  order_ref?: string;
+  created_by?: string;
+  created_at?: string;
+  items: PurchaseItemOut[];
+  total_qty: number;
+  total_cost: number;
+}
+
 export interface BatchItem {
   name: string;
   qty: number;
@@ -895,6 +1046,9 @@ export interface Order {
   otk_rejection_photo?: string;
   otk_attempts?: number;
   tags?: string;            // JSON список тегов
+  managers?: string[];      // id руководителей проекта
+  manager_names?: string[];
+  can_close?: boolean;      // может ли текущий пользователь закрыть заказ
   stages_total?: number;
   stages_done?: number;
   created_at: string;

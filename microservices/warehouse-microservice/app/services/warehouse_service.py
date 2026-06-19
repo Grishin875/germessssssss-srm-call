@@ -3,10 +3,20 @@ from typing import List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func, text
 
-from app.models.warehouse import WarehouseComponent, Operation, ProductionStock, Case
-from app.schemas.warehouse import ComponentCreate, ComponentUpdate, BatchOperationRequest, CaseCreate, CaseUpdate, ReserveForOrderRequest
+from app.models.warehouse import (
+    WarehouseComponent, Operation, ProductionStock, Case,
+    Warehouse, WarehouseStock, DEFAULT_WAREHOUSES, WAREHOUSE_TYPE_LABELS,
+    Supplier, PurchaseRequest, PurchaseRequestItem, PURCHASE_STATUSES, PURCHASE_STATUS_LABELS,
+)
+from app.schemas.warehouse import (
+    ComponentCreate, ComponentUpdate, BatchOperationRequest, CaseCreate, CaseUpdate,
+    ReserveForOrderRequest, WarehouseCreate, WarehouseUpdate, WarehouseOut,
+    WarehouseStockOut, StockTransferRequest,
+    SupplierCreate, SupplierUpdate, PurchaseRequestCreate, PurchaseRequestUpdate,
+    FromShortageRequest,
+)
 
-WAREHOUSE_OP_TYPES = ["RECEIVE", "WRITEOFF", "CREATE", "UPDATE", "DELETE", "CANCEL"]
+WAREHOUSE_OP_TYPES = ["RECEIVE", "WRITEOFF", "CREATE", "UPDATE", "DELETE", "CANCEL", "TRANSFER"]
 
 
 def _norm(s: str) -> str:
@@ -422,6 +432,261 @@ async def verify_reservations(db: AsyncSession, fix: bool = False) -> dict:
     }
 
 
+# ── Warehouses (мультисклад) ──────────────────────────────────────────────────
+
+async def seed_warehouses(db: AsyncSession):
+    """Завести дефолтные склады, если их ещё нет (вызывается при старте)."""
+    existing = (await db.execute(select(func.count()).select_from(Warehouse))).scalar_one()
+    if existing:
+        return
+    for w in DEFAULT_WAREHOUSES:
+        db.add(Warehouse(code=w["code"], name=w["name"], warehouse_type=w["warehouse_type"], is_active=True))
+    await db.commit()
+
+
+async def _main_warehouse_id(db: AsyncSession) -> Optional[int]:
+    r = await db.execute(
+        select(Warehouse.id).where(Warehouse.warehouse_type == "main").order_by(Warehouse.id).limit(1)
+    )
+    mid = r.scalar_one_or_none()
+    if mid is None:
+        r = await db.execute(select(Warehouse.id).order_by(Warehouse.id).limit(1))
+        mid = r.scalar_one_or_none()
+    return mid
+
+
+async def reconcile_stock(db: AsyncSession):
+    """Поддерживает инвариант: сумма остатков по складам == warehouse_components.stock.
+    Разницу (новые компоненты, изменения через batch/reserve) относит на Основной склад."""
+    main_id = await _main_warehouse_id(db)
+    if main_id is None:
+        return
+
+    comps = (await db.execute(select(WarehouseComponent.name, WarehouseComponent.stock))).all()
+    sums = (await db.execute(
+        select(WarehouseStock.component_name, func.coalesce(func.sum(WarehouseStock.quantity), 0))
+        .group_by(WarehouseStock.component_name)
+    )).all()
+    sum_map = {name: _to_float(s) for name, s in sums}
+
+    main_rows = (await db.execute(
+        select(WarehouseStock).where(WarehouseStock.warehouse_id == main_id)
+    )).scalars().all()
+    main_by_name = {r.component_name: r for r in main_rows}
+
+    changed = False
+    for name, stock in comps:
+        total = _to_float(stock)
+        diff = total - sum_map.get(name, 0.0)
+        if abs(diff) < 1e-9:
+            continue
+        row = main_by_name.get(name)
+        if row:
+            await db.execute(
+                update(WarehouseStock).where(WarehouseStock.id == row.id)
+                .values(quantity=_to_float(row.quantity) + diff)
+            )
+        else:
+            db.add(WarehouseStock(warehouse_id=main_id, component_name=name, quantity=diff))
+        changed = True
+    if changed:
+        await db.commit()
+
+
+async def list_warehouses(db: AsyncSession, include_inactive: bool = False) -> List[WarehouseOut]:
+    await reconcile_stock(db)
+    q = select(Warehouse).order_by(Warehouse.id)
+    if not include_inactive:
+        q = q.where(Warehouse.is_active.is_(True))
+    whs = (await db.execute(q)).scalars().all()
+
+    agg = (await db.execute(
+        select(WarehouseStock.warehouse_id, func.count(), func.coalesce(func.sum(WarehouseStock.quantity), 0))
+        .where(WarehouseStock.quantity != 0)
+        .group_by(WarehouseStock.warehouse_id)
+    )).all()
+    agg_map = {wid: (cnt, _to_float(s)) for wid, cnt, s in agg}
+
+    out = []
+    for w in whs:
+        cnt, total = agg_map.get(w.id, (0, 0.0))
+        out.append(WarehouseOut(
+            id=w.id, code=w.code, name=w.name, warehouse_type=w.warehouse_type,
+            type_label=WAREHOUSE_TYPE_LABELS.get(w.warehouse_type, w.warehouse_type),
+            address=w.address, is_active=bool(w.is_active),
+            positions_count=cnt, total_quantity=total,
+        ))
+    return out
+
+
+async def get_warehouse_by_id(db: AsyncSession, wid: int) -> Optional[Warehouse]:
+    r = await db.execute(select(Warehouse).where(Warehouse.id == wid))
+    return r.scalar_one_or_none()
+
+
+async def create_warehouse(db: AsyncSession, data: WarehouseCreate) -> WarehouseOut:
+    if not data.code.strip() or not data.name.strip():
+        raise ValueError("Код и название склада обязательны")
+    dup = await db.execute(select(Warehouse).where(func.lower(Warehouse.code) == _norm(data.code)))
+    if dup.scalar_one_or_none():
+        raise ValueError(f"Склад с кодом '{data.code}' уже существует")
+    w = Warehouse(
+        code=data.code.strip(), name=data.name.strip(),
+        warehouse_type=data.warehouse_type or "main",
+        address=data.address, is_active=data.is_active,
+    )
+    db.add(w)
+    await db.commit()
+    await db.refresh(w)
+    return WarehouseOut(
+        id=w.id, code=w.code, name=w.name, warehouse_type=w.warehouse_type,
+        type_label=WAREHOUSE_TYPE_LABELS.get(w.warehouse_type, w.warehouse_type),
+        address=w.address, is_active=bool(w.is_active),
+    )
+
+
+async def update_warehouse(db: AsyncSession, wid: int, data: WarehouseUpdate) -> WarehouseOut:
+    w = await get_warehouse_by_id(db, wid)
+    if not w:
+        raise ValueError("Склад не найден")
+    vals = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None or k == "address"}
+    if "code" in vals and vals["code"]:
+        dup = await db.execute(
+            select(Warehouse).where(func.lower(Warehouse.code) == _norm(vals["code"]), Warehouse.id != wid)
+        )
+        if dup.scalar_one_or_none():
+            raise ValueError(f"Склад с кодом '{vals['code']}' уже существует")
+    if vals:
+        await db.execute(update(Warehouse).where(Warehouse.id == wid).values(**vals))
+        await db.commit()
+    w = await get_warehouse_by_id(db, wid)
+    return WarehouseOut(
+        id=w.id, code=w.code, name=w.name, warehouse_type=w.warehouse_type,
+        type_label=WAREHOUSE_TYPE_LABELS.get(w.warehouse_type, w.warehouse_type),
+        address=w.address, is_active=bool(w.is_active),
+    )
+
+
+async def delete_warehouse(db: AsyncSession, wid: int):
+    w = await get_warehouse_by_id(db, wid)
+    if not w:
+        raise ValueError("Склад не найден")
+    if w.warehouse_type == "main":
+        raise ValueError("Нельзя удалить Основной склад")
+    has = (await db.execute(
+        select(func.coalesce(func.sum(WarehouseStock.quantity), 0)).where(WarehouseStock.warehouse_id == wid)
+    )).scalar_one()
+    if _to_float(has) != 0:
+        raise ValueError("Склад не пуст — перенесите остатки перед удалением")
+    await db.execute(delete(WarehouseStock).where(WarehouseStock.warehouse_id == wid))
+    await db.execute(delete(Warehouse).where(Warehouse.id == wid))
+    await db.commit()
+
+
+async def get_warehouse_stock(db: AsyncSession, wid: int) -> List[WarehouseStockOut]:
+    await reconcile_stock(db)
+    w = await get_warehouse_by_id(db, wid)
+    if not w:
+        raise ValueError("Склад не найден")
+    rows = (await db.execute(
+        select(WarehouseStock)
+        .where(WarehouseStock.warehouse_id == wid, WarehouseStock.quantity != 0)
+        .order_by(func.lower(WarehouseStock.component_name))
+    )).scalars().all()
+    return [
+        WarehouseStockOut(
+            warehouse_id=wid, warehouse_name=w.name, warehouse_type=w.warehouse_type,
+            component_name=r.component_name, quantity=_to_float(r.quantity),
+            reserved=_to_float(r.reserved), available=_to_float(r.quantity) - _to_float(r.reserved),
+        ) for r in rows
+    ]
+
+
+async def get_component_distribution(db: AsyncSession, component_name: str) -> List[WarehouseStockOut]:
+    """Распределение одного компонента по всем складам."""
+    await reconcile_stock(db)
+    whs = {w.id: w for w in (await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)))).scalars().all()}
+    rows = (await db.execute(
+        select(WarehouseStock).where(func.lower(WarehouseStock.component_name) == _norm(component_name))
+    )).scalars().all()
+    out = []
+    for r in rows:
+        w = whs.get(r.warehouse_id)
+        if not w:
+            continue
+        out.append(WarehouseStockOut(
+            warehouse_id=r.warehouse_id, warehouse_name=w.name, warehouse_type=w.warehouse_type,
+            component_name=r.component_name, quantity=_to_float(r.quantity),
+            reserved=_to_float(r.reserved), available=_to_float(r.quantity) - _to_float(r.reserved),
+        ))
+    out.sort(key=lambda x: x.warehouse_id)
+    return out
+
+
+async def transfer_stock(db: AsyncSession, data: StockTransferRequest) -> dict:
+    """Перемещение компонента между складами. Общий остаток не меняется."""
+    if data.quantity <= 0:
+        raise ValueError("Количество должно быть больше нуля")
+    if data.from_warehouse_id == data.to_warehouse_id:
+        raise ValueError("Склад-источник и склад-получатель совпадают")
+    src_w = await get_warehouse_by_id(db, data.from_warehouse_id)
+    dst_w = await get_warehouse_by_id(db, data.to_warehouse_id)
+    if not src_w or not dst_w:
+        raise ValueError("Склад не найден")
+
+    await reconcile_stock(db)
+
+    src = (await db.execute(
+        select(WarehouseStock).where(
+            WarehouseStock.warehouse_id == data.from_warehouse_id,
+            func.lower(WarehouseStock.component_name) == _norm(data.component_name),
+        )
+    )).scalar_one_or_none()
+    avail = (_to_float(src.quantity) - _to_float(src.reserved)) if src else 0.0
+    if avail < data.quantity:
+        raise ValueError(
+            f"Недостаточно '{data.component_name}' на складе «{src_w.name}»: "
+            f"доступно {avail}, запрошено {data.quantity}"
+        )
+
+    await db.execute(
+        update(WarehouseStock).where(WarehouseStock.id == src.id)
+        .values(quantity=_to_float(src.quantity) - data.quantity)
+    )
+
+    dst = (await db.execute(
+        select(WarehouseStock).where(
+            WarehouseStock.warehouse_id == data.to_warehouse_id,
+            func.lower(WarehouseStock.component_name) == _norm(data.component_name),
+        )
+    )).scalar_one_or_none()
+    if dst:
+        await db.execute(
+            update(WarehouseStock).where(WarehouseStock.id == dst.id)
+            .values(quantity=_to_float(dst.quantity) + data.quantity)
+        )
+    else:
+        db.add(WarehouseStock(
+            warehouse_id=data.to_warehouse_id,
+            component_name=(src.component_name if src else data.component_name),
+            quantity=data.quantity,
+        ))
+
+    note = f"Перемещение: {src_w.name} → {dst_w.name}"
+    if data.note:
+        note += f". {data.note}"
+    await _log_op(db, "TRANSFER", data.component_name, data.quantity, note, op_id=_op_id("TRANSFER"))
+
+    await db.commit()
+    return {
+        "success": True,
+        "component_name": data.component_name,
+        "quantity": data.quantity,
+        "from": src_w.name,
+        "to": dst_w.name,
+    }
+
+
 async def reserve_for_order(db: AsyncSession, data: ReserveForOrderRequest) -> dict:
     """
     Списывает складские компоненты под заказ.
@@ -461,3 +726,253 @@ async def reserve_for_order(db: AsyncSession, data: ReserveForOrderRequest) -> d
 
     await db.commit()
     return {"success": True, "order_id": data.order_id, "reserved_count": len(data.items)}
+
+
+# ── Закупка (procurement) ─────────────────────────────────────────────────────
+
+async def list_suppliers(db: AsyncSession, include_inactive: bool = False) -> List[dict]:
+    q = select(Supplier).order_by(func.lower(Supplier.name))
+    if not include_inactive:
+        q = q.where(Supplier.is_active.is_(True))
+    rows = (await db.execute(q)).scalars().all()
+    return [{
+        "id": s.id, "name": s.name, "contact": s.contact, "phone": s.phone,
+        "email": s.email, "note": s.note, "is_active": bool(s.is_active),
+    } for s in rows]
+
+
+async def create_supplier(db: AsyncSession, data: SupplierCreate) -> dict:
+    if not data.name.strip():
+        raise ValueError("Название поставщика обязательно")
+    dup = (await db.execute(
+        select(Supplier).where(func.lower(Supplier.name) == _norm(data.name))
+    )).scalar_one_or_none()
+    if dup:
+        raise ValueError(f"Поставщик «{data.name}» уже существует")
+    s = Supplier(
+        name=data.name.strip(), contact=data.contact, phone=data.phone,
+        email=data.email, note=data.note, is_active=data.is_active,
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return {"id": s.id, "name": s.name, "contact": s.contact, "phone": s.phone,
+            "email": s.email, "note": s.note, "is_active": bool(s.is_active)}
+
+
+async def update_supplier(db: AsyncSession, sid: int, data: SupplierUpdate) -> dict:
+    s = (await db.execute(select(Supplier).where(Supplier.id == sid))).scalar_one_or_none()
+    if not s:
+        raise ValueError("Поставщик не найден")
+    vals = data.model_dump(exclude_unset=True)
+    if vals.get("name"):
+        dup = (await db.execute(
+            select(Supplier).where(func.lower(Supplier.name) == _norm(vals["name"]), Supplier.id != sid)
+        )).scalar_one_or_none()
+        if dup:
+            raise ValueError(f"Поставщик «{vals['name']}» уже существует")
+    if vals:
+        await db.execute(update(Supplier).where(Supplier.id == sid).values(**vals))
+        await db.commit()
+    s = (await db.execute(select(Supplier).where(Supplier.id == sid))).scalar_one()
+    return {"id": s.id, "name": s.name, "contact": s.contact, "phone": s.phone,
+            "email": s.email, "note": s.note, "is_active": bool(s.is_active)}
+
+
+async def delete_supplier(db: AsyncSession, sid: int):
+    s = (await db.execute(select(Supplier).where(Supplier.id == sid))).scalar_one_or_none()
+    if not s:
+        raise ValueError("Поставщик не найден")
+    await db.execute(update(Supplier).where(Supplier.id == sid).values(is_active=False))
+    await db.commit()
+
+
+async def _pr_to_out(db: AsyncSession, pr: PurchaseRequest) -> dict:
+    items = (await db.execute(
+        select(PurchaseRequestItem).where(PurchaseRequestItem.request_id == pr.id).order_by(PurchaseRequestItem.id)
+    )).scalars().all()
+    supplier_name = None
+    if pr.supplier_id:
+        supplier_name = (await db.execute(
+            select(Supplier.name).where(Supplier.id == pr.supplier_id)
+        )).scalar_one_or_none()
+    item_out = []
+    total_qty = 0.0
+    total_cost = 0.0
+    for it in items:
+        qty = _to_float(it.quantity)
+        price = _to_float(it.unit_price) if it.unit_price is not None else None
+        total_qty += qty
+        if price:
+            total_cost += qty * price
+        item_out.append({
+            "id": it.id, "component_name": it.component_name, "quantity": qty,
+            "received_qty": _to_float(it.received_qty), "unit_price": price, "note": it.note,
+        })
+    return {
+        "id": pr.id, "supplier_id": pr.supplier_id, "supplier_name": supplier_name,
+        "status": pr.status, "status_label": PURCHASE_STATUS_LABELS.get(pr.status, pr.status),
+        "note": pr.note, "order_ref": pr.order_ref, "created_by": pr.created_by,
+        "created_at": pr.created_at, "items": item_out,
+        "total_qty": round(total_qty, 3), "total_cost": round(total_cost, 2),
+    }
+
+
+async def list_purchase_requests(db: AsyncSession, status: str = None) -> List[dict]:
+    q = select(PurchaseRequest).order_by(PurchaseRequest.id.desc())
+    if status:
+        q = q.where(PurchaseRequest.status == status)
+    prs = (await db.execute(q)).scalars().all()
+    return [await _pr_to_out(db, pr) for pr in prs]
+
+
+async def get_purchase_request(db: AsyncSession, pid: int) -> dict:
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one_or_none()
+    if not pr:
+        raise ValueError("Заявка не найдена")
+    return await _pr_to_out(db, pr)
+
+
+async def create_purchase_request(db: AsyncSession, data: PurchaseRequestCreate, created_by: str = None) -> dict:
+    pr = PurchaseRequest(
+        supplier_id=data.supplier_id, status="draft",
+        note=data.note, order_ref=data.order_ref, created_by=created_by,
+    )
+    db.add(pr)
+    await db.flush()
+    for it in data.items:
+        if not it.component_name.strip():
+            continue
+        db.add(PurchaseRequestItem(
+            request_id=pr.id, component_name=it.component_name.strip(),
+            quantity=it.quantity, unit_price=it.unit_price, note=it.note,
+        ))
+    await db.commit()
+    await db.refresh(pr)
+    return await _pr_to_out(db, pr)
+
+
+async def _receive_into_stock(db: AsyncSession, pr: PurchaseRequest):
+    """Оприходовать все позиции заявки на склад. Идемпотентно по operation_id PR-{id}-{idx}."""
+    items = (await db.execute(
+        select(PurchaseRequestItem).where(PurchaseRequestItem.request_id == pr.id).order_by(PurchaseRequestItem.id)
+    )).scalars().all()
+    for idx, it in enumerate(items):
+        qty = _to_float(it.quantity)
+        if qty <= 0:
+            continue
+        op_id = f"PR-{pr.id}-{idx}"
+        exists = (await db.execute(
+            select(Operation.id).where(Operation.operation_id == op_id)
+        )).scalar_one_or_none()
+        if exists:
+            continue
+        comp = await _get_by_name(db, it.component_name)
+        if comp:
+            await db.execute(
+                update(WarehouseComponent)
+                .where(func.lower(WarehouseComponent.name) == _norm(it.component_name))
+                .values(stock=WarehouseComponent.stock + qty)
+            )
+        else:
+            db.add(WarehouseComponent(name=it.component_name.strip(), stock=qty, source="purchase"))
+        await db.execute(
+            update(PurchaseRequestItem).where(PurchaseRequestItem.id == it.id)
+            .values(received_qty=qty)
+        )
+        await _log_op(
+            db, "RECEIVE", it.component_name, qty,
+            f"Приёмка по заявке закупки #{pr.id}", op_id=op_id,
+        )
+
+
+async def update_purchase_request(db: AsyncSession, pid: int, data: PurchaseRequestUpdate) -> dict:
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one_or_none()
+    if not pr:
+        raise ValueError("Заявка не найдена")
+    if pr.status == "received":
+        raise ValueError("Полученную заявку нельзя редактировать")
+
+    new_status = data.status
+    if new_status and new_status not in PURCHASE_STATUSES:
+        raise ValueError(f"Недопустимый статус: {new_status}")
+
+    # Замена позиций (только пока не получено)
+    if data.items is not None:
+        await db.execute(delete(PurchaseRequestItem).where(PurchaseRequestItem.request_id == pid))
+        for it in data.items:
+            if not it.component_name.strip():
+                continue
+            db.add(PurchaseRequestItem(
+                request_id=pid, component_name=it.component_name.strip(),
+                quantity=it.quantity, unit_price=it.unit_price, note=it.note,
+            ))
+        await db.flush()
+
+    vals = {}
+    for k in ("supplier_id", "note", "order_ref"):
+        v = getattr(data, k)
+        if v is not None:
+            vals[k] = v
+    if new_status:
+        vals["status"] = new_status
+
+    # Переход в «получено» — оприходовать на склад
+    if new_status == "received":
+        await _receive_into_stock(db, pr)
+
+    if vals:
+        await db.execute(update(PurchaseRequest).where(PurchaseRequest.id == pid).values(**vals))
+    await db.commit()
+
+    if new_status == "received":
+        await reconcile_stock(db)
+
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one()
+    return await _pr_to_out(db, pr)
+
+
+async def receive_purchase_request(db: AsyncSession, pid: int) -> dict:
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one_or_none()
+    if not pr:
+        raise ValueError("Заявка не найдена")
+    if pr.status == "received":
+        raise ValueError("Заявка уже получена")
+    if pr.status == "cancelled":
+        raise ValueError("Заявка отменена")
+    await _receive_into_stock(db, pr)
+    await db.execute(update(PurchaseRequest).where(PurchaseRequest.id == pid).values(status="received"))
+    await db.commit()
+    await reconcile_stock(db)
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one()
+    return await _pr_to_out(db, pr)
+
+
+async def delete_purchase_request(db: AsyncSession, pid: int):
+    pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one_or_none()
+    if not pr:
+        raise ValueError("Заявка не найдена")
+    if pr.status == "received":
+        raise ValueError("Полученную заявку нельзя удалить")
+    await db.execute(delete(PurchaseRequestItem).where(PurchaseRequestItem.request_id == pid))
+    await db.execute(delete(PurchaseRequest).where(PurchaseRequest.id == pid))
+    await db.commit()
+
+
+async def create_from_shortage(db: AsyncSession, data: FromShortageRequest, created_by: str = None) -> dict:
+    items = [it for it in data.items if it.component_name.strip() and it.quantity > 0]
+    if not items:
+        raise ValueError("Нет позиций с дефицитом для заявки")
+    pr = PurchaseRequest(
+        supplier_id=data.supplier_id, status="draft",
+        note=data.note or "Авто-заявка по дефициту", order_ref=data.order_ref, created_by=created_by,
+    )
+    db.add(pr)
+    await db.flush()
+    for it in items:
+        db.add(PurchaseRequestItem(
+            request_id=pr.id, component_name=it.component_name.strip(), quantity=it.quantity,
+        ))
+    await db.commit()
+    await db.refresh(pr)
+    return await _pr_to_out(db, pr)

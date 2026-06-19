@@ -6,7 +6,7 @@ import { AppLayout } from "../../components/layout/AppLayout";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import { api, Component, Case, FinishedGood } from "../../lib/api";
+import { api, Component, Case, FinishedGood, Warehouse, WarehouseStockRow } from "../../lib/api";
 import { exportToExcel, parseExcelFile, Row as ExcelRow } from "../../lib/excel";
 import { toast } from "../../components/ui/Toast";
 
@@ -51,16 +51,25 @@ function SourceBadge({ source }: { source?: string }) {
 
 const TABS = [
   { key: "components",     label: "Компоненты" },
+  { key: "warehouses",     label: "Склады" },
   { key: "cases",          label: "Корпуса" },
   { key: "finished_goods", label: "Готовая продукция" },
   { key: "analytics",      label: "Аналитика" },
 ];
 
+const WH_TYPE_META: Record<string, { label: string; color: string }> = {
+  main:     { label: "Основной",          color: "#0ea5e9" },
+  smd:      { label: "СМД",               color: "#8b5cf6" },
+  rea:      { label: "РЭА",               color: "#f59e0b" },
+  finished: { label: "Готовая продукция", color: "#10b981" },
+  defect:   { label: "Брак",              color: "#ef4444" },
+};
+
 export default function WarehousePage() {
   const { user, loading, hasPermission } = useAuth();
   const router = useRouter();
 
-  const [tab, setTab] = useState<"components" | "cases" | "finished_goods" | "analytics">("components");
+  const [tab, setTab] = useState<"components" | "warehouses" | "cases" | "finished_goods" | "analytics">("components");
 
   // ── Components state ──────────────────────────────────────────────────────
   const [components, setComponents] = useState<Component[]>([]);
@@ -115,6 +124,18 @@ export default function WarehousePage() {
 
   const [error, setError] = useState("");
 
+  // ── Склады (мультисклад) ───────────────────────────────────────────────────
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [whLoading, setWhLoading] = useState(false);
+  const [whStock, setWhStock] = useState<WarehouseStockRow[]>([]);
+  const [selectedWh, setSelectedWh] = useState<number | null>(null);
+  const [whStockLoading, setWhStockLoading] = useState(false);
+  const [showWhModal, setShowWhModal] = useState(false);
+  const [editWh, setEditWh] = useState<Warehouse | null>(null);
+  const [whForm, setWhForm] = useState({ code: "", name: "", warehouse_type: "main", address: "" });
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferForm, setTransferForm] = useState({ component_name: "", from_warehouse_id: "", to_warehouse_id: "", quantity: "", note: "" });
+
   useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
 
   useEffect(() => {
@@ -135,6 +156,81 @@ export default function WarehousePage() {
     setFetching(true);
     try { setComponents(await api.getComponents()); } catch {}
     setFetching(false);
+  }
+
+  async function loadWarehouses() {
+    setWhLoading(true);
+    try {
+      const list = await api.getWarehouses();
+      setWarehouses(list);
+      setSelectedWh(prev => prev ?? (list[0]?.id ?? null));
+    } catch {}
+    setWhLoading(false);
+  }
+
+  async function loadWhStock(wid: number) {
+    setWhStockLoading(true);
+    try { setWhStock(await api.getWarehouseStock(wid)); } catch { setWhStock([]); }
+    setWhStockLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "warehouses" && user) loadWarehouses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, user]);
+
+  useEffect(() => {
+    if (selectedWh != null) loadWhStock(selectedWh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWh]);
+
+  async function saveWarehouse() {
+    if (!whForm.code.trim() || !whForm.name.trim()) { setError("Код и название обязательны"); return; }
+    setSaving(true); setError("");
+    try {
+      const data = { code: whForm.code.trim(), name: whForm.name.trim(), warehouse_type: whForm.warehouse_type, address: whForm.address || undefined };
+      if (editWh) await api.updateWarehouse(editWh.id, data);
+      else await api.createWarehouse(data);
+      setShowWhModal(false); setEditWh(null);
+      setWhForm({ code: "", name: "", warehouse_type: "main", address: "" });
+      loadWarehouses();
+      toast.success(editWh ? "Склад обновлён" : "Склад создан");
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
+    setSaving(false);
+  }
+
+  async function removeWarehouse(w: Warehouse) {
+    if (!confirm(`Удалить склад «${w.name}»?`)) return;
+    try {
+      await api.deleteWarehouse(w.id);
+      if (selectedWh === w.id) setSelectedWh(null);
+      loadWarehouses();
+      toast.success("Склад удалён");
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
+
+  async function doTransfer() {
+    const { component_name, from_warehouse_id, to_warehouse_id, quantity } = transferForm;
+    if (!component_name.trim() || !from_warehouse_id || !to_warehouse_id || !(Number(quantity) > 0)) {
+      setError("Заполните компонент, склады и количество (> 0)"); return;
+    }
+    if (from_warehouse_id === to_warehouse_id) { setError("Склады совпадают"); return; }
+    setSaving(true); setError("");
+    try {
+      const res = await api.transferStock({
+        component_name: component_name.trim(),
+        from_warehouse_id: Number(from_warehouse_id),
+        to_warehouse_id: Number(to_warehouse_id),
+        quantity: Number(quantity),
+        note: transferForm.note || undefined,
+      });
+      setShowTransfer(false);
+      setTransferForm({ component_name: "", from_warehouse_id: "", to_warehouse_id: "", quantity: "", note: "" });
+      loadWarehouses();
+      if (selectedWh != null) loadWhStock(selectedWh);
+      toast.success(`Перемещено: ${res.from} → ${res.to}`);
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
+    setSaving(false);
   }
 
   // ── Excel экспорт/импорт компонентов ───────────────────────────────────────
@@ -312,12 +408,25 @@ export default function WarehousePage() {
               setError("");
             }}>Добавить корпус</Button>
           )}
+          {hasPermission("warehouse.edit") && tab === "warehouses" && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button variant="secondary" size="sm" onClick={() => {
+                setShowTransfer(true); setError("");
+                setTransferForm({ component_name: "", from_warehouse_id: String(selectedWh ?? ""), to_warehouse_id: "", quantity: "", note: "" });
+              }}>⇄ Переместить</Button>
+              <Button size="sm" onClick={() => {
+                setShowWhModal(true); setEditWh(null);
+                setWhForm({ code: "", name: "", warehouse_type: "main", address: "" });
+                setError("");
+              }}>Добавить склад</Button>
+            </div>
+          )}
         </div>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, background: "var(--bg-secondary)", padding: 4, borderRadius: 10, width: "fit-content" }}>
           {TABS.map(t => (
-            <button key={t.key} style={tabStyle(t.key)} onClick={() => setTab(t.key as "components" | "cases" | "finished_goods" | "analytics")}>
+            <button key={t.key} style={tabStyle(t.key)} onClick={() => setTab(t.key as "components" | "warehouses" | "cases" | "finished_goods" | "analytics")}>
               {t.label}
             </button>
           ))}
@@ -407,6 +516,107 @@ export default function WarehousePage() {
                 </div>
               )}
             </Card>
+          </>
+        )}
+
+        {/* ── Warehouses Tab ────────────────────────────────────────────────── */}
+        {tab === "warehouses" && (
+          <>
+            {whLoading ? (
+              <Card><div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>Загрузка…</div></Card>
+            ) : (
+              <>
+                {/* Карточки складов */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+                  {warehouses.map(w => {
+                    const meta = WH_TYPE_META[w.warehouse_type] ?? WH_TYPE_META.main;
+                    const active = selectedWh === w.id;
+                    return (
+                      <div
+                        key={w.id}
+                        onClick={() => setSelectedWh(w.id)}
+                        style={{
+                          padding: 16, borderRadius: 12, cursor: "pointer",
+                          background: active ? meta.color + "14" : "var(--bg-secondary)",
+                          border: `1.5px solid ${active ? meta.color : "var(--border)"}`,
+                          transition: "all 0.15s",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: meta.color + "22", color: meta.color }}>{meta.label}</span>
+                          {hasPermission("warehouse.edit") && (
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button title="Изменить" onClick={(e) => { e.stopPropagation(); setEditWh(w); setShowWhModal(true); setWhForm({ code: w.code, name: w.name, warehouse_type: w.warehouse_type, address: w.address || "" }); setError(""); }}
+                                style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--text-muted)", padding: 2 }}><IcoPencil /></button>
+                              {w.warehouse_type !== "main" && (
+                                <button title="Удалить" onClick={(e) => { e.stopPropagation(); removeWarehouse(w); }}
+                                  style={{ border: "none", background: "transparent", cursor: "pointer", color: "#ef4444", padding: 2 }}><IcoTrash /></button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ fontWeight: 700, fontSize: 15, marginTop: 10 }}>{w.name}</div>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>Код: {w.code}</div>
+                        <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
+                          <div>
+                            <div style={{ fontSize: 20, fontWeight: 800 }}>{w.positions_count ?? 0}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>позиций</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 20, fontWeight: 800 }}>{(w.total_quantity ?? 0).toLocaleString("ru")}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>всего</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Остатки выбранного склада */}
+                {selectedWh != null && (
+                  <Card>
+                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
+                      Остатки: {warehouses.find(w => w.id === selectedWh)?.name ?? ""}
+                    </div>
+                    {whStockLoading ? (
+                      <div style={{ textAlign: "center", padding: 30, color: "var(--text-muted)" }}>Загрузка…</div>
+                    ) : whStock.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: 30, color: "var(--text-muted)" }}>На складе нет остатков</div>
+                    ) : (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ textAlign: "left", fontSize: 12, color: "var(--text-muted)" }}>
+                              <th style={{ padding: "8px 10px" }}>Компонент</th>
+                              <th style={{ padding: "8px 10px", textAlign: "right" }}>Остаток</th>
+                              <th style={{ padding: "8px 10px", textAlign: "right" }}>Резерв</th>
+                              <th style={{ padding: "8px 10px", textAlign: "right" }}>Доступно</th>
+                              <th style={{ padding: "8px 10px" }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {whStock.map(r => (
+                              <tr key={r.component_name} style={{ borderTop: "1px solid var(--border)" }}>
+                                <td style={{ padding: "9px 10px", fontWeight: 600 }}>{r.component_name}</td>
+                                <td style={{ padding: "9px 10px", textAlign: "right" }}>{r.quantity.toLocaleString("ru")}</td>
+                                <td style={{ padding: "9px 10px", textAlign: "right", color: r.reserved ? "#f59e0b" : "var(--text-muted)" }}>{r.reserved.toLocaleString("ru")}</td>
+                                <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 700 }}>{r.available.toLocaleString("ru")}</td>
+                                <td style={{ padding: "9px 10px", textAlign: "right" }}>
+                                  {hasPermission("warehouse.edit") && (
+                                    <button onClick={() => { setShowTransfer(true); setError(""); setTransferForm({ component_name: r.component_name, from_warehouse_id: String(selectedWh), to_warehouse_id: "", quantity: "", note: "" }); }}
+                                      style={{ border: "1px solid var(--border)", background: "transparent", borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }}>⇄</button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </Card>
+                )}
+              </>
+            )}
           </>
         )}
 
@@ -603,6 +813,89 @@ export default function WarehousePage() {
           </>
         )}
       </div>
+
+      {/* Warehouse create/edit modal */}
+      <Modal
+        open={showWhModal}
+        onClose={() => { setShowWhModal(false); setEditWh(null); setError(""); }}
+        title={editWh ? "Редактировать склад" : "Добавить склад"}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setShowWhModal(false); setEditWh(null); }}>Отмена</Button>
+            <Button onClick={saveWarehouse} loading={saving}>{editWh ? "Сохранить" : "Создать"}</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          {error && <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</div>}
+          <div>
+            <label>Код *</label>
+            <input value={whForm.code} onChange={e => setWhForm({ ...whForm, code: e.target.value })} placeholder="напр. SMD" style={{ width: "100%" }} />
+          </div>
+          <div>
+            <label>Название *</label>
+            <input value={whForm.name} onChange={e => setWhForm({ ...whForm, name: e.target.value })} placeholder="Склад СМД" style={{ width: "100%" }} />
+          </div>
+          <div>
+            <label>Тип склада</label>
+            <select value={whForm.warehouse_type} onChange={e => setWhForm({ ...whForm, warehouse_type: e.target.value })} style={{ width: "100%" }}>
+              {Object.entries(WH_TYPE_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Адрес</label>
+            <input value={whForm.address} onChange={e => setWhForm({ ...whForm, address: e.target.value })} style={{ width: "100%" }} />
+          </div>
+        </div>
+      </Modal>
+
+      {/* Transfer modal */}
+      <Modal
+        open={showTransfer}
+        onClose={() => { setShowTransfer(false); setError(""); }}
+        title="Перемещение между складами"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowTransfer(false)}>Отмена</Button>
+            <Button onClick={doTransfer} loading={saving}>Переместить</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          {error && <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</div>}
+          <div>
+            <label>Компонент *</label>
+            <input list="wh-comp-list" value={transferForm.component_name} onChange={e => setTransferForm({ ...transferForm, component_name: e.target.value })} placeholder="Название компонента" style={{ width: "100%" }} />
+            <datalist id="wh-comp-list">
+              {components.map(c => <option key={c.id} value={c.name} />)}
+            </datalist>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label>Откуда *</label>
+              <select value={transferForm.from_warehouse_id} onChange={e => setTransferForm({ ...transferForm, from_warehouse_id: e.target.value })} style={{ width: "100%" }}>
+                <option value="">— склад —</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Куда *</label>
+              <select value={transferForm.to_warehouse_id} onChange={e => setTransferForm({ ...transferForm, to_warehouse_id: e.target.value })} style={{ width: "100%" }}>
+                <option value="">— склад —</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label>Количество *</label>
+            <input type="number" value={transferForm.quantity} onChange={e => setTransferForm({ ...transferForm, quantity: e.target.value })} style={{ width: "100%" }} />
+          </div>
+          <div>
+            <label>Примечание</label>
+            <input value={transferForm.note} onChange={e => setTransferForm({ ...transferForm, note: e.target.value })} style={{ width: "100%" }} />
+          </div>
+        </div>
+      </Modal>
 
       {/* Add/Edit component modal */}
       <Modal
