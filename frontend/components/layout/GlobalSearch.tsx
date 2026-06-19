@@ -75,12 +75,12 @@ export function GlobalSearch() {
   return (
     <div
       onClick={() => setOpen(false)}
-      style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh", backdropFilter: "blur(2px)" }}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh" }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="glass"
-        style={{ width: "min(560px, calc(100vw - 32px))", borderRadius: 16, overflow: "hidden", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}
+        style={{ width: "min(560px, calc(100vw - 32px))", borderRadius: 14, overflow: "hidden", boxShadow: "var(--shadow-lg)" }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
           <span style={{ fontSize: 18, color: "var(--text-muted)" }}>🔍</span>
@@ -108,8 +108,8 @@ export function GlobalSearch() {
               onMouseEnter={() => setActive(i)}
               style={{
                 width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12,
-                padding: "10px 12px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: i === active ? "var(--primary)15" : "transparent",
+                padding: "10px 12px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: i === active ? "var(--primary-light)" : "transparent",
                 color: "var(--text)", transition: "background 0.1s",
               }}
             >

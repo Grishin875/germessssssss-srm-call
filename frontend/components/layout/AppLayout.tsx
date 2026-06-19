@@ -66,8 +66,8 @@ function NotificationBell() {
             {notifs.length === 0 ? (
               <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Нет уведомлений</div>
             ) : notifs.map(n => (
-              <div key={n.id} onClick={() => markOne(n.id, n.link)} style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-light)", cursor: n.link ? "pointer" : "default", background: n.is_read ? "transparent" : "var(--primary)08", display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <div style={{ width: 8, height: 8, borderRadius: "50%", background: n.is_read ? "transparent" : "#6366f1", marginTop: 5, flexShrink: 0 }} />
+              <div key={n.id} onClick={() => markOne(n.id, n.link)} style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-light)", cursor: n.link ? "pointer" : "default", background: n.is_read ? "transparent" : "var(--primary-light)", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: n.is_read ? "transparent" : "var(--primary)", marginTop: 5, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: n.is_read ? 400 : 600, color: "var(--text)" }}>{n.title}</div>
                   {n.message && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{n.message}</div>}

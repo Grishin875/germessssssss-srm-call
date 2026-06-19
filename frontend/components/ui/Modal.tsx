@@ -39,7 +39,7 @@ export function Modal({ open, onClose, title, children, footer, size = "md" }: P
       {/* Backdrop */}
       <div
         className="animate-fadeIn"
-        style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(15,23,42,0.6)", backdropFilter: "blur(5px)" }}
+        style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(15,23,42,0.5)" }}
         onClick={onClose}
       />
       {/* Scroll container (отступ под сайдбар задаёт .modal-scroll, на мобильном — 0) */}
@@ -53,7 +53,8 @@ export function Modal({ open, onClose, title, children, footer, size = "md" }: P
               position: "relative",
               width: `min(94vw, ${maxWidths[size] ?? 448}px)`,
               maxHeight: "90vh",
-              borderRadius: 18,
+              borderRadius: 14,
+              boxShadow: "var(--shadow-lg)",
               display: "flex",
               flexDirection: "column",
             }}

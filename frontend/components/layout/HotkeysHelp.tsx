@@ -23,8 +23,8 @@ export function HotkeysHelp() {
 
   if (!open) return null;
   return (
-    <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 2100, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(2px)" }}>
-      <div onClick={e => e.stopPropagation()} className="glass pop-in" style={{ width: "min(440px, calc(100vw - 32px))", borderRadius: 16, padding: 24 }}>
+    <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 2100, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={e => e.stopPropagation()} className="glass pop-in" style={{ width: "min(440px, calc(100vw - 32px))", borderRadius: 14, padding: 24, boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>⌨ Горячие клавиши</h2>
           <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "var(--text-muted)" }}>×</button>

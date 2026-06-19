@@ -279,20 +279,19 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
       >
         <div
           style={{
-            width: 38,
-            height: 38,
-            borderRadius: 11,
-            background: "linear-gradient(135deg, #6366f1, #a78bfa)",
+            width: 36,
+            height: 36,
+            borderRadius: 9,
+            background: "var(--primary)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             color: "#fff",
-            fontSize: 12,
-            fontWeight: 700,
+            fontSize: 12.5,
+            fontWeight: 800,
             flexShrink: 0,
-            letterSpacing: "0.02em",
+            letterSpacing: "0.01em",
             fontFamily: "var(--font-display)",
-            boxShadow: "0 6px 18px -4px rgba(99,102,241,0.7)",
           }}
         >
           B3
@@ -327,9 +326,9 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
             <React.Fragment key={item.href}>
               {item.group && (
                 <div style={{
-                  fontSize: 10, fontWeight: 700, letterSpacing: 1.4,
-                  textTransform: "uppercase", color: "var(--sidebar-text)",
-                  opacity: 0.4, padding: "14px 12px 5px",
+                  fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em",
+                  textTransform: "uppercase", color: "var(--sidebar-heading)",
+                  padding: "16px 12px 6px",
                 }}>
                   {item.group}
                 </div>
@@ -341,33 +340,29 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
                 display: "flex",
                 alignItems: "center",
                 gap: 11,
-                padding: "9px 11px",
-                borderRadius: 11,
+                padding: "8px 11px",
+                borderRadius: 8,
                 fontSize: 13.5,
                 fontWeight: active ? 600 : 450,
                 color: active ? "#fff" : "var(--sidebar-text)",
-                background: active
-                  ? "linear-gradient(135deg, rgba(99,102,241,0.95), rgba(139,92,246,0.75))"
-                  : "transparent",
+                background: active ? "var(--sidebar-active)" : "transparent",
                 textDecoration: "none",
-                transition: "background 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease",
-                boxShadow: active ? "0 6px 18px -6px rgba(99,102,241,0.7)" : "none",
+                transition: "background 0.14s ease, color 0.14s ease",
                 position: "relative",
               }}
               onMouseEnter={(e) => {
                 const t = e.currentTarget as HTMLElement;
-                if (!active) { t.style.background = "rgba(255,255,255,0.06)"; t.style.transform = "translateX(3px)"; t.style.color = "rgba(255,255,255,0.92)"; }
+                if (!active) { t.style.background = "rgba(255,255,255,0.06)"; t.style.color = "#e7eaf0"; }
               }}
               onMouseLeave={(e) => {
                 const t = e.currentTarget as HTMLElement;
-                if (!active) { t.style.background = "transparent"; t.style.transform = ""; t.style.color = "var(--sidebar-text)"; }
+                if (!active) { t.style.background = "transparent"; t.style.color = "var(--sidebar-text)"; }
               }}
             >
               <span style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                width: 26, height: 26, borderRadius: 8, flexShrink: 0,
-                background: active ? "rgba(255,255,255,0.18)" : "transparent",
-                opacity: active ? 1 : 0.7, transition: "background 0.18s",
+                width: 24, height: 24, flexShrink: 0,
+                opacity: active ? 1 : 0.78, transition: "opacity 0.14s",
               }}>
                 {item.icon}
               </span>
@@ -375,23 +370,21 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
                 {NAV_KEY[item.href] ? t(NAV_KEY[item.href], item.label) : item.label}
               </span>
               {item.href === "/my-tasks" && taskCount > 0 && (
-                <span className="glow-pulse" style={{
+                <span style={{
                   marginLeft: "auto",
-                  minWidth: 19, height: 19,
+                  minWidth: 18, height: 18,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  borderRadius: 10, background: active ? "rgba(255,255,255,0.25)" : "linear-gradient(135deg, #6366f1, #818cf8)",
-                  color: "#fff", fontSize: 10, fontWeight: 700, padding: "0 5px",
-                  boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
+                  borderRadius: 6, background: active ? "rgba(255,255,255,0.22)" : "var(--primary)",
+                  color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "0 5px",
                 }}>{taskCount}</span>
               )}
               {item.href === "/chat" && chatUnread > 0 && (
-                <span className="glow-pulse" style={{
+                <span style={{
                   marginLeft: "auto",
-                  minWidth: 19, height: 19,
+                  minWidth: 18, height: 18,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  borderRadius: 10, background: active ? "rgba(255,255,255,0.25)" : "linear-gradient(135deg, #6366f1, #818cf8)",
-                  color: "#fff", fontSize: 10, fontWeight: 700, padding: "0 5px",
-                  boxShadow: "0 2px 8px -2px rgba(99,102,241,0.8)",
+                  borderRadius: 6, background: active ? "rgba(255,255,255,0.22)" : "var(--primary)",
+                  color: "#fff", fontSize: 10.5, fontWeight: 700, padding: "0 5px",
                 }}>{chatUnread > 99 ? "99+" : chatUnread}</span>
               )}
             </Link>
@@ -413,9 +406,9 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
             alignItems: "center",
             gap: 10,
             padding: "10px 12px",
-            borderRadius: 12,
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            borderRadius: 10,
+            background: "var(--sidebar-surface)",
+            border: "1px solid var(--sidebar-border)",
           }}
         >
           <div
@@ -423,15 +416,14 @@ export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean;
               width: 34,
               height: 34,
               borderRadius: "50%",
-              background: "linear-gradient(135deg, #6366f1, #a78bfa)",
+              background: "var(--primary)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               color: "#fff",
-              fontSize: 11,
+              fontSize: 11.5,
               fontWeight: 700,
               flexShrink: 0,
-              boxShadow: "0 4px 12px -3px rgba(99,102,241,0.6)",
             }}
           >
             {initials}
