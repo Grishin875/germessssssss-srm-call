@@ -5,13 +5,14 @@ export type ThemeMode   = "light" | "dark" | "system";
 export type AccentColor = "indigo" | "blue" | "violet" | "rose" | "emerald" | "orange";
 export type Density     = "normal" | "compact";
 
+// Сдержанная корпоративная палитра. По умолчанию — синий (фирменный).
 export const ACCENT_COLORS: Record<AccentColor, { label: string; primary: string; hover: string; light: string; text: string }> = {
-  indigo:  { label: "Индиго",   primary: "#6366f1", hover: "#4f46e5", light: "#eef2ff", text: "#4338ca" },
-  blue:    { label: "Синий",    primary: "#3b82f6", hover: "#2563eb", light: "#eff6ff", text: "#1d4ed8" },
-  violet:  { label: "Фиолет",  primary: "#8b5cf6", hover: "#7c3aed", light: "#f5f3ff", text: "#6d28d9" },
-  rose:    { label: "Розовый", primary: "#f43f5e", hover: "#e11d48", light: "#fff1f2", text: "#be123c" },
-  emerald: { label: "Зелёный", primary: "#10b981", hover: "#059669", light: "#ecfdf5", text: "#047857" },
-  orange:  { label: "Оранжев.", primary: "#f97316", hover: "#ea580c", light: "#fff7ed", text: "#c2410c" },
+  blue:    { label: "Синий",    primary: "#2563eb", hover: "#1d4ed8", light: "#eff4ff", text: "#1d4ed8" },
+  indigo:  { label: "Индиго",   primary: "#4f46e5", hover: "#4338ca", light: "#eef2ff", text: "#4338ca" },
+  violet:  { label: "Фиолет",  primary: "#7c3aed", hover: "#6d28d9", light: "#f5f3ff", text: "#6d28d9" },
+  emerald: { label: "Зелёный", primary: "#059669", hover: "#047857", light: "#ecfdf5", text: "#047857" },
+  orange:  { label: "Оранжев.", primary: "#ea580c", hover: "#c2410c", light: "#fff7ed", text: "#c2410c" },
+  rose:    { label: "Бордо",    primary: "#e11d48", hover: "#be123c", light: "#fff1f2", text: "#be123c" },
 };
 
 interface ThemeCtx {
@@ -25,7 +26,7 @@ interface ThemeCtx {
 }
 
 const Ctx = createContext<ThemeCtx>({
-  mode: "system", accent: "indigo", density: "normal", isDark: false,
+  mode: "system", accent: "blue", density: "normal", isDark: false,
   setMode: () => {}, setAccent: () => {}, setDensity: () => {},
 });
 
@@ -43,10 +44,11 @@ function applyAccent(accent: AccentColor) {
   const el = document.documentElement;
   el.style.setProperty("--primary",              c.primary);
   el.style.setProperty("--primary-hover",        c.hover);
+  el.style.setProperty("--primary-active",       c.hover);
   el.style.setProperty("--primary-light",        c.light);
   el.style.setProperty("--primary-text",         c.text);
   el.style.setProperty("--sidebar-active-border", c.primary);
-  el.style.setProperty("--sidebar-active",       c.primary + "28");
+  el.style.setProperty("--sidebar-active",       c.primary);
 }
 
 function applyDensity(density: Density) {
@@ -66,13 +68,13 @@ function applyDensity(density: Density) {
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [mode,    setModeState]    = useState<ThemeMode>("system");
-  const [accent,  setAccentState]  = useState<AccentColor>("indigo");
+  const [accent,  setAccentState]  = useState<AccentColor>("blue");
   const [density, setDensityState] = useState<Density>("normal");
   const [isDark,  setIsDark]       = useState(false);
 
   useEffect(() => {
     const savedMode    = (localStorage.getItem("germess_theme")   as ThemeMode)   || "system";
-    const savedAccent  = (localStorage.getItem("germess_accent")  as AccentColor) || "indigo";
+    const savedAccent  = (localStorage.getItem("germess_accent")  as AccentColor) || "blue";
     const savedDensity = (localStorage.getItem("germess_density") as Density)     || "normal";
 
     setModeState(savedMode);
@@ -122,6 +124,6 @@ export const ANTI_FLASH_SCRIPT = `(function(){try{
   var d=m==='dark'||(m==='system'&&window.matchMedia('(prefers-color-scheme:dark)').matches);
   document.documentElement.setAttribute('data-theme',d?'dark':'light');
   var a=localStorage.getItem('germess_accent');
-  var colors={indigo:['#6366f1','#4f46e5','#eef2ff','#4338ca'],blue:['#3b82f6','#2563eb','#eff6ff','#1d4ed8'],violet:['#8b5cf6','#7c3aed','#f5f3ff','#6d28d9'],rose:['#f43f5e','#e11d48','#fff1f2','#be123c'],emerald:['#10b981','#059669','#ecfdf5','#047857'],orange:['#f97316','#ea580c','#fff7ed','#c2410c']};
-  if(a&&colors[a]){var c=colors[a];var r=document.documentElement;r.style.setProperty('--primary',c[0]);r.style.setProperty('--primary-hover',c[1]);r.style.setProperty('--primary-light',c[2]);r.style.setProperty('--primary-text',c[3]);r.style.setProperty('--sidebar-active-border',c[0]);r.style.setProperty('--sidebar-active',c[0]+'28');}
+  var colors={blue:['#2563eb','#1d4ed8','#eff4ff','#1d4ed8'],indigo:['#4f46e5','#4338ca','#eef2ff','#4338ca'],violet:['#7c3aed','#6d28d9','#f5f3ff','#6d28d9'],emerald:['#059669','#047857','#ecfdf5','#047857'],orange:['#ea580c','#c2410c','#fff7ed','#c2410c'],rose:['#e11d48','#be123c','#fff1f2','#be123c']};
+  if(a&&colors[a]){var c=colors[a];var r=document.documentElement;r.style.setProperty('--primary',c[0]);r.style.setProperty('--primary-hover',c[1]);r.style.setProperty('--primary-active',c[1]);r.style.setProperty('--primary-light',c[2]);r.style.setProperty('--primary-text',c[3]);r.style.setProperty('--sidebar-active-border',c[0]);r.style.setProperty('--sidebar-active',c[0]);}
 }catch(e){}})();`;
