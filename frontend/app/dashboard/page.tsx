@@ -434,6 +434,7 @@ export default function DashboardPage() {
             <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
               {[
                 { label: "+ Новый заказ", href: "/orders", primary: true },
+                { label: "Планирование", href: "/planning" },
                 { label: "Производство", href: "/production" },
                 { label: "ОТК", href: "/otk" },
                 { label: "Отгрузка", href: "/shipment" },

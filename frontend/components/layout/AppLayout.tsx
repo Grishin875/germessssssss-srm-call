@@ -65,7 +65,7 @@ function NotificationBell() {
           <div style={{ maxHeight: 360, overflowY: "auto" }}>
             {notifs.length === 0 ? (
               <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Нет уведомлений</div>
-            ) : notifs.map(n => (
+            ) : notifs.slice(0, 8).map(n => (
               <div key={n.id} onClick={() => markOne(n.id, n.link)} style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-light)", cursor: n.link ? "pointer" : "default", background: n.is_read ? "transparent" : "var(--primary-light)", display: "flex", gap: 10, alignItems: "flex-start" }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: n.is_read ? "transparent" : "var(--primary)", marginTop: 5, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -76,6 +76,12 @@ function NotificationBell() {
               </div>
             ))}
           </div>
+          <button
+            onClick={() => { setOpen(false); router.push("/notifications"); }}
+            style={{ width: "100%", padding: "11px 16px", border: "none", borderTop: "1px solid var(--border)", background: "transparent", color: "var(--primary)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+          >
+            Все уведомления →
+          </button>
         </div>
       )}
     </div>

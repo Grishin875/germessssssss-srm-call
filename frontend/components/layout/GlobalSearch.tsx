@@ -8,6 +8,8 @@ interface Item { id: string; label: string; sub?: string; icon: string; action: 
 const PAGES: { label: string; href: string; icon: string; keywords: string }[] = [
   { label: "Дашборд", href: "/dashboard", icon: "🏠", keywords: "главная панель" },
   { label: "Заказы", href: "/orders", icon: "📋", keywords: "orders заказы производство" },
+  { label: "Планирование", href: "/planning", icon: "🗓️", keywords: "planning сроки дедлайны загрузка просрочка" },
+  { label: "Уведомления", href: "/notifications", icon: "🔔", keywords: "notifications уведомления события" },
   { label: "Мои задачи", href: "/my-tasks", icon: "✅", keywords: "tasks этапы" },
   { label: "Производство", href: "/production", icon: "🏭", keywords: "production партии" },
   { label: "ОТК", href: "/otk", icon: "🔍", keywords: "контроль качество брак" },
