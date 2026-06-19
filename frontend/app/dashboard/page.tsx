@@ -208,38 +208,33 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
-      {/* ── Hero header ────────────────────────────── */}
+      {/* ── Page header ────────────────────────────── */}
       <div
-        className="hero-aurora"
         style={{
-          marginBottom: 24,
-          padding: "26px 28px",
-          borderRadius: 16,
-          background: "linear-gradient(120deg, #4f46e5 0%, #6366f1 30%, #818cf8 55%, #a78bfa 78%, #6366f1 100%)",
-          color: "#fff",
-          position: "relative",
-          overflow: "hidden",
-          boxShadow: "0 8px 24px -8px rgba(99,102,241,0.45)",
+          marginBottom: 22,
+          paddingBottom: 18,
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 12,
         }}
       >
-        <div className="glow-pulse" style={{ position: "absolute", right: -40, top: -40, width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,255,255,0.16), transparent 70%)" }} />
-        <div className="glow-pulse" style={{ position: "absolute", right: 120, bottom: -70, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, rgba(168,85,247,0.25), transparent 70%)", animationDelay: "1.2s" }} />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, position: "relative" }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", opacity: 0.85, marginBottom: 6 }}>
-              {ROLE_TITLES[role] || "Рабочее место"}
-            </div>
-            <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, marginBottom: 6 }}>
-              {t("dash.welcome")}, {firstName}
-            </h1>
-            <p style={{ fontSize: 13.5, opacity: 0.9 }}>
-              {todayStr.charAt(0).toUpperCase() + todayStr.slice(1)}
-            </p>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 7 }}>
+            {ROLE_TITLES[role] || "Рабочее место"}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, background: "rgba(255,255,255,0.15)", padding: "7px 14px", borderRadius: 99, backdropFilter: "blur(4px)" }}>
-            <span className="live-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80" }} />
-            Онлайн · обновлено {lastUpdate ? lastUpdate.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" }) : "—"}
-          </div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.15, color: "var(--text)", fontFamily: "var(--font-display)" }}>
+            {t("dash.welcome")}, {firstName}
+          </h1>
+          <p style={{ fontSize: 13.5, color: "var(--text-secondary)", marginTop: 6 }}>
+            {todayStr.charAt(0).toUpperCase() + todayStr.slice(1)}
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", background: "var(--bg-tertiary)", border: "1px solid var(--border)", padding: "6px 12px", borderRadius: 8 }}>
+          <span className="live-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
+          Обновлено {lastUpdate ? lastUpdate.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" }) : "—"}
         </div>
       </div>
 
@@ -247,15 +242,15 @@ export default function DashboardPage() {
       {birthdays.length > 0 && (
         <div
           style={{
-            display: "flex", alignItems: "center", gap: 16, padding: "14px 20px",
-            borderRadius: 12, background: "linear-gradient(135deg, #fdf2f8, #fce7f3)",
-            border: "1px solid #fbcfe8", marginBottom: 20,
+            display: "flex", alignItems: "center", gap: 14, padding: "13px 18px",
+            borderRadius: 10, background: "var(--bg-secondary)",
+            border: "1px solid var(--border)", marginBottom: 20,
           }}
         >
-          <span style={{ fontSize: 22 }}>🎉</span>
+          <span style={{ fontSize: 20 }}>🎉</span>
           <div>
-            <p style={{ fontSize: 13, fontWeight: 600, color: "#9d174d", marginBottom: 2 }}>Сегодня день рождения</p>
-            <p style={{ fontSize: 13, color: "#be185d" }}>{birthdays.map((u) => u.full_name || u.username).join(", ")}</p>
+            <p style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Сегодня день рождения</p>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>{birthdays.map((u) => u.full_name || u.username).join(", ")}</p>
           </div>
         </div>
       )}

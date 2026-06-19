@@ -134,7 +134,7 @@ export default function ReportsPage() {
               const on = cols.has(String(c.key));
               return (
                 <button key={String(c.key)} onClick={() => setCols(s => { const n = new Set(s); n.has(String(c.key)) ? n.delete(String(c.key)) : n.add(String(c.key)); return n; })}
-                  style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${on ? "var(--primary)" : "var(--border)"}`, background: on ? "var(--primary)15" : "transparent", color: on ? "var(--primary)" : "var(--text-secondary)", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${on ? "var(--primary)" : "var(--border)"}`, background: on ? "var(--primary-light)" : "transparent", color: on ? "var(--primary-text)" : "var(--text-secondary)", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                   {on ? "✓ " : ""}{c.label}
                 </button>
               );
@@ -174,7 +174,7 @@ export default function ReportsPage() {
               const on = statuses.has(s);
               return (
                 <button key={s} onClick={() => setStatuses(x => { const n = new Set(x); n.has(s) ? n.delete(s) : n.add(s); return n; })}
-                  style={{ padding: "4px 10px", borderRadius: 16, border: `1px solid ${on ? "var(--primary)" : "var(--border)"}`, background: on ? "var(--primary)15" : "transparent", color: on ? "var(--primary)" : "var(--text-muted)", cursor: "pointer", fontSize: 12 }}>
+                  style={{ padding: "4px 10px", borderRadius: 7, border: `1px solid ${on ? "var(--primary)" : "var(--border)"}`, background: on ? "var(--primary-light)" : "transparent", color: on ? "var(--primary-text)" : "var(--text-muted)", cursor: "pointer", fontSize: 12 }}>
                   {s}
                 </button>
               );

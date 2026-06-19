@@ -459,7 +459,7 @@ export default function OrdersPage() {
     <style>body{font-family:'Segoe UI',Arial,sans-serif;margin:32px;color:#111}h1{margin:0 0 4px}.muted{color:#666;font-size:13px}
     table{width:100%;border-collapse:collapse;margin-top:16px}td{padding:8px 10px;border-bottom:1px solid #ddd;font-size:14px}td:first-child{color:#666;width:40%}
     @media print{.noprint{display:none}}</style></head><body>
-    <div class="noprint" style="margin-bottom:16px"><button onclick="window.print()" style="background:#4f46e5;color:#fff;border:none;padding:9px 18px;border-radius:8px;cursor:pointer">🖨 Печать</button></div>
+    <div class="noprint" style="margin-bottom:16px"><button onclick="window.print()" style="background:#2563eb;color:#fff;border:none;padding:9px 18px;border-radius:8px;cursor:pointer">🖨 Печать</button></div>
     <h1>Заказ №${o.id}</h1><div class="muted">Печать: ${new Date().toLocaleString("ru")}</div>
     <table>
       <tr><td>Изделие</td><td><b>${esc(o.product_name)}</b></td></tr>
@@ -672,7 +672,7 @@ export default function OrdersPage() {
 
         {/* Панель массовых действий */}
         {view === "table" && selectedIds.size > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderRadius: 12, background: "var(--primary)12", border: "1px solid var(--primary)40", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderRadius: 10, background: "var(--primary-light)", border: "1px solid color-mix(in srgb, var(--primary) 40%, transparent)", flexWrap: "wrap" }}>
             <span style={{ fontWeight: 700, fontSize: 14 }}>Выбрано: {selectedIds.size}</span>
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Статус:</span>
             {["В работе", "На проверке ОТК", "Готов к отгрузке", "Завершен"].map(s => (
@@ -737,7 +737,7 @@ export default function OrdersPage() {
                     const tags: string[] = (() => { try { return JSON.parse(o.tags || "[]"); } catch { return []; } })();
                     const pct = o.stages_total ? Math.round((o.stages_done || 0) / o.stages_total * 100) : null;
                     return (
-                    <tr key={o.id} style={{ ...(isOverdue ? { background: "rgba(239,68,68,0.07)" } : {}), ...(sel ? { background: "var(--primary)10" } : {}) }}>
+                    <tr key={o.id} style={{ ...(isOverdue ? { background: "var(--danger-light)" } : {}), ...(sel ? { background: "var(--primary-light)" } : {}) }}>
                       <td><input type="checkbox" checked={sel} onChange={() => toggleSelect(o.id)} style={{ cursor: "pointer", width: 15, height: 15 }} /></td>
                       {visibleCols.has("fav") && (
                         <td><button onClick={() => toggleFav(o.id)} title="В избранное" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, color: favorites.has(o.id) ? "#f59e0b" : "var(--border)" }}>{favorites.has(o.id) ? "★" : "☆"}</button></td>
@@ -777,7 +777,7 @@ export default function OrdersPage() {
                       {visibleCols.has("tags") && (
                         <td>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                            {tags.map(t => <span key={t} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "var(--primary)15", color: "var(--primary)" }}>{t}</span>)}
+                            {tags.map(t => <span key={t} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 6, background: "var(--primary-light)", color: "var(--primary-text)" }}>{t}</span>)}
                           </div>
                         </td>
                       )}
@@ -894,7 +894,7 @@ export default function OrdersPage() {
           </div>
 
           {/* Канонический маршрут по ТЗ (12 этапов) */}
-          <div style={{ padding: "12px 14px", borderRadius: 10, background: useCanonical ? "#6366f110" : "var(--bg-secondary)", border: `1px solid ${useCanonical ? "#6366f155" : "var(--border)"}` }}>
+          <div style={{ padding: "12px 14px", borderRadius: 10, background: useCanonical ? "var(--primary-light)" : "var(--bg-secondary)", border: `1px solid ${useCanonical ? "color-mix(in srgb, var(--primary) 45%, transparent)" : "var(--border)"}` }}>
             <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
               <input type="checkbox" checked={useCanonical} onChange={e => setUseCanonical(e.target.checked)} />
               <span style={{ fontWeight: 600, fontSize: 13.5 }}>Маршрут по ТЗ (12 этапов)</span>
@@ -1200,8 +1200,8 @@ export default function OrdersPage() {
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Метки</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                     {tags.map(t => (
-                      <span key={t} style={{ fontSize: 12, padding: "2px 8px", borderRadius: 12, background: "var(--primary)15", color: "var(--primary)", display: "flex", alignItems: "center", gap: 4 }}>
-                        {t}<button onClick={() => updateTags(previewOrder, tags.filter(x => x !== t))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", fontSize: 13, padding: 0 }}>×</button>
+                      <span key={t} style={{ fontSize: 12, padding: "2px 8px", borderRadius: 6, background: "var(--primary-light)", color: "var(--primary-text)", display: "flex", alignItems: "center", gap: 4 }}>
+                        {t}<button onClick={() => updateTags(previewOrder, tags.filter(x => x !== t))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary-text)", fontSize: 13, padding: 0 }}>×</button>
                       </span>
                     ))}
                     <input

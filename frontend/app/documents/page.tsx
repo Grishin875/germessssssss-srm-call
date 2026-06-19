@@ -13,7 +13,7 @@ import { toast } from "../../components/ui/Toast";
 // ── File type config ────────────────────────────────────────────────────────
 const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; icon: React.ReactNode }> = {
   pdf: {
-    color: "#dc2626", bg: "linear-gradient(135deg,#fef2f2,#fee2e2)",
+    color: "#dc2626", bg: "#fef2f2",
     label: "PDF",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" width={40} height={40}>
@@ -25,7 +25,7 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   docx: {
-    color: "#2563eb", bg: "linear-gradient(135deg,#eff6ff,#dbeafe)",
+    color: "#2563eb", bg: "#eff6ff",
     label: "DOCX",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" width={40} height={40}>
@@ -37,7 +37,7 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   doc: {
-    color: "#2563eb", bg: "linear-gradient(135deg,#eff6ff,#dbeafe)",
+    color: "#2563eb", bg: "#eff6ff",
     label: "DOC",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" width={40} height={40}>
@@ -49,7 +49,7 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   xlsx: {
-    color: "#16a34a", bg: "linear-gradient(135deg,#f0fdf4,#dcfce7)",
+    color: "#16a34a", bg: "#f0fdf4",
     label: "XLSX",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" width={40} height={40}>
@@ -61,7 +61,7 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   xls: {
-    color: "#16a34a", bg: "linear-gradient(135deg,#f0fdf4,#dcfce7)",
+    color: "#16a34a", bg: "#f0fdf4",
     label: "XLS",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" width={40} height={40}>
@@ -73,27 +73,27 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   jpg: {
-    color: "#d97706", bg: "linear-gradient(135deg,#fffbeb,#fef3c7)",
+    color: "#d97706", bg: "#fffbeb",
     label: "JPG",
     icon: null,
   },
   jpeg: {
-    color: "#d97706", bg: "linear-gradient(135deg,#fffbeb,#fef3c7)",
+    color: "#d97706", bg: "#fffbeb",
     label: "JPEG",
     icon: null,
   },
   png: {
-    color: "#7c3aed", bg: "linear-gradient(135deg,#f5f3ff,#ede9fe)",
+    color: "#7c3aed", bg: "#f5f3ff",
     label: "PNG",
     icon: null,
   },
   gif: {
-    color: "#0891b2", bg: "linear-gradient(135deg,#ecfeff,#cffafe)",
+    color: "#0891b2", bg: "#ecfeff",
     label: "GIF",
     icon: null,
   },
   mp4: {
-    color: "#be185d", bg: "linear-gradient(135deg,#fdf2f8,#fce7f3)",
+    color: "#be185d", bg: "#fdf2f8",
     label: "MP4",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" width={40} height={40}>
@@ -106,7 +106,7 @@ const FILE_CONFIG: Record<string, { color: string; bg: string; label: string; ic
     ),
   },
   txt: {
-    color: "#475569", bg: "linear-gradient(135deg,#f8fafc,#f1f5f9)",
+    color: "#475569", bg: "#f8fafc",
     label: "TXT",
     icon: (
       <svg viewBox="0 0 40 40" fill="none" width={40} height={40}>
@@ -128,7 +128,7 @@ const CONVERT_OPTIONS: Record<string, string[]> = {
 
 function getConfig(type: string) {
   return FILE_CONFIG[type.toLowerCase()] || {
-    color: "#475569", bg: "linear-gradient(135deg,#f8fafc,#f1f5f9)", label: type.toUpperCase(),
+    color: "#475569", bg: "#f8fafc", label: type.toUpperCase(),
     icon: (
       <svg viewBox="0 0 40 40" fill="none" width={40} height={40}>
         <rect width="40" height="40" rx="8" fill="#64748b" fillOpacity=".1"/>

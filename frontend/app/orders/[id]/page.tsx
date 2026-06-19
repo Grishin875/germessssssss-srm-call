@@ -1261,17 +1261,17 @@ export default function OrderDetailPage() {
       {assignStage && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", paddingLeft: 248 }}
           onClick={() => setAssignStage(null)}>
-          <div style={{ background: "var(--bg-primary)", borderRadius: 14, padding: 28, minWidth: 360, maxWidth: 480, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
+          <div style={{ background: "var(--bg-primary)", borderRadius: 14, padding: 28, minWidth: 360, maxWidth: 480, boxShadow: "var(--shadow-lg)", border: "1px solid var(--border)" }}
             onClick={e => e.stopPropagation()}>
             <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>
               Назначить исполнителя — {assignStage.stage_name || assignStage.stage_type}
             </h2>
-            {error && <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "#fef2f2", color: "#dc2626", fontSize: 13 }}>{error}</div>}
+            {error && <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "var(--danger-light)", color: "var(--danger)", fontSize: 13 }}>{error}</div>}
             <div style={{ marginBottom: 20 }}>
               <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--text-secondary)" }}>
                 Исполнитель
                 {assignStage?.required_role && (
-                  <span style={{ marginLeft: 8, fontSize: 11, color: "#6366f1", fontWeight: 500 }}>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--primary)", fontWeight: 500 }}>
                     (нужна роль: {assignStage.required_role})
                   </span>
                 )}
@@ -1307,12 +1307,12 @@ export default function OrderDetailPage() {
       {showAddAssignee && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", paddingLeft: 248 }}
           onClick={() => setShowAddAssignee(null)}>
-          <div style={{ background: "var(--bg-primary)", borderRadius: 14, padding: 28, minWidth: 380, maxWidth: 500, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
+          <div style={{ background: "var(--bg-primary)", borderRadius: 14, padding: 28, minWidth: 380, maxWidth: 500, boxShadow: "var(--shadow-lg)", border: "1px solid var(--border)" }}
             onClick={e => e.stopPropagation()}>
             <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>
               + Исполнитель — {showAddAssignee.stage_name || showAddAssignee.stage_type}
             </h2>
-            {error && <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "#fef2f2", color: "#dc2626", fontSize: 13 }}>{error}</div>}
+            {error && <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "var(--danger-light)", color: "var(--danger)", fontSize: 13 }}>{error}</div>}
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--text-secondary)" }}>Исполнитель</label>
               {assigneesLoading ? (

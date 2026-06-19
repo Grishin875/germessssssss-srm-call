@@ -822,15 +822,14 @@ export default function RecipesPage() {
                     onClick={() => toggleDepartment(opt.value)}
                     style={{
                       position: "relative", textAlign: "left", padding: "12px 14px",
-                      borderRadius: 12,
-                      border: `2px solid ${active ? opt.color : "var(--border)"}`,
+                      borderRadius: 10,
+                      border: `1.5px solid ${active ? opt.color : "var(--border)"}`,
                       background: active
-                        ? `linear-gradient(135deg, ${opt.color}1e, ${opt.color}0a)`
+                        ? `color-mix(in srgb, ${opt.color} 12%, transparent)`
                         : "var(--bg-secondary)",
                       cursor: "pointer",
-                      transition: "transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease",
-                      transform: active ? "translateY(-2px)" : "none",
-                      boxShadow: active ? `0 6px 16px -6px ${opt.color}80` : "var(--shadow-sm)",
+                      transition: "box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease",
+                      boxShadow: active ? "var(--shadow-sm)" : "var(--shadow-sm)",
                     }}
                     onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.borderColor = opt.color + "88"; }}
                     onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.borderColor = "var(--border)"; }}

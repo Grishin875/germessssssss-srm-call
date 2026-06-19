@@ -177,15 +177,15 @@ export default function ChatPage() {
                   onClick={() => setActiveId(ch.id)}
                   style={{
                     width: "100%", textAlign: "left", border: "none", cursor: "pointer",
-                    padding: "10px 12px", borderRadius: 11, marginBottom: 3,
-                    background: isActive ? "linear-gradient(135deg, rgba(99,102,241,0.16), rgba(139,92,246,0.10))" : "transparent",
+                    padding: "10px 12px", borderRadius: 9, marginBottom: 2,
+                    background: isActive ? "var(--primary-light)" : "transparent",
                     display: "flex", gap: 10, alignItems: "center",
                   }}
                 >
                   <div style={{
                     width: 36, height: 36, borderRadius: 10, flexShrink: 0, color: "#fff", fontWeight: 700, fontSize: 13,
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    background: ch.kind === "order" ? "linear-gradient(135deg,#f59e0b,#f97316)" : ch.kind === "direct" ? "linear-gradient(135deg,#0ea5e9,#6366f1)" : "linear-gradient(135deg,#6366f1,#a78bfa)",
+                    background: ch.kind === "order" ? "#d97706" : ch.kind === "direct" ? "#0284c7" : "var(--primary)",
                   }}>{ch.kind === "direct" ? initials(ch.name) : KIND_ICON[ch.kind]}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
@@ -197,7 +197,7 @@ export default function ChatPage() {
                     </div>
                   </div>
                   {ch.unread > 0 && (
-                    <span style={{ flexShrink: 0, minWidth: 19, height: 19, padding: "0 5px", borderRadius: 10, background: "linear-gradient(135deg,#6366f1,#818cf8)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{ch.unread}</span>
+                    <span style={{ flexShrink: 0, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 6, background: "var(--primary)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{ch.unread}</span>
                   )}
                 </button>
               );
@@ -234,7 +234,7 @@ export default function ChatPage() {
                       <div style={{ display: "flex", flexDirection: own ? "row-reverse" : "row", gap: 9, marginTop: grouped ? 1 : 8, alignItems: "flex-end" }}>
                         <div style={{ width: 30, flexShrink: 0 }}>
                           {!grouped && (
-                            <div style={{ width: 30, height: 30, borderRadius: "50%", background: "linear-gradient(135deg,#6366f1,#a78bfa)", color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(m.user_name)}</div>
+                            <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(m.user_name)}</div>
                           )}
                         </div>
                         <div style={{ maxWidth: "70%", display: "flex", flexDirection: "column", alignItems: own ? "flex-end" : "flex-start" }}>
@@ -244,7 +244,8 @@ export default function ChatPage() {
                             title={fmtTime(m.created_at)}
                             style={{
                               padding: "7px 11px", borderRadius: 13, fontSize: 13.5, lineHeight: 1.4, wordBreak: "break-word", whiteSpace: "pre-wrap",
-                              background: m.is_deleted ? "transparent" : own ? "linear-gradient(135deg,#6366f1,#7c6cf0)" : "var(--bg-secondary)",
+                              background: m.is_deleted ? "transparent" : own ? "var(--primary)" : "var(--bg-secondary)",
+                              boxShadow: m.is_deleted || own ? "none" : "var(--shadow-sm)",
                               color: m.is_deleted ? "var(--text-secondary)" : own ? "#fff" : "var(--text)",
                               fontStyle: m.is_deleted ? "italic" : "normal",
                               border: m.is_deleted ? "1px dashed var(--border)" : "none",
@@ -312,7 +313,7 @@ export default function ChatPage() {
         <div style={{ maxHeight: 320, overflowY: "auto" }}>
           {users.map(u => (
             <button key={u.id} onClick={() => startDm(u.id)} style={{ width: "100%", textAlign: "left", border: "none", background: "transparent", cursor: "pointer", padding: "9px 10px", borderRadius: 9, display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#0ea5e9,#6366f1)", color: "#fff", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(u.full_name || u.username)}</div>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(u.full_name || u.username)}</div>
               <span style={{ fontSize: 13.5 }}>{u.full_name || u.username}</span>
             </button>
           ))}

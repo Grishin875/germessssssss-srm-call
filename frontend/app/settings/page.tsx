@@ -230,7 +230,7 @@ export default function SettingsPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
               <div style={{
                 width: 52, height: 52, borderRadius: "50%",
-                background: "linear-gradient(135deg, var(--primary), #a78bfa)",
+                background: "var(--primary)",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 color: "#fff", fontSize: 18, fontWeight: 700, flexShrink: 0,
               }}>
