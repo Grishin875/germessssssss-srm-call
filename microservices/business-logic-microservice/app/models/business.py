@@ -17,6 +17,7 @@ class Order(Base):
     comment = Column(Text)
     status = Column(String(100), default="Создан")
     assigned_department = Column(String(100))
+    managers = Column(Text)                        # JSON список id руководителей проекта
     otk_comment = Column(Text)
     submit_photo_url = Column(String(500))        # фото оператора при сдаче в ОТК
     otk_rejection_photo = Column(String(500))     # фото брака от ОТК

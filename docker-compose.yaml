@@ -4,6 +4,7 @@ x-common-env: &common-env
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET не задан — добавьте его в .env (см. .env.example)}
 
 x-depends: &depends
+  restart: unless-stopped
   depends_on:
     db:
       condition: service_healthy
@@ -15,6 +16,7 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: crm_production
       POSTGRES_USER: postgres
@@ -31,6 +33,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
 
@@ -142,6 +145,7 @@ services:
     build:
       context: ./microservices
       dockerfile: api-gateway/Dockerfile
+    restart: unless-stopped
     environment:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET не задан — добавьте его в .env (см. .env.example)}
       AUTH_SERVICE_URL: http://auth:8001
@@ -164,6 +168,19 @@ services:
       - integration
     ports:
       - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://gateway:8000
+      NODE_ENV: production
+    depends_on:
+      - gateway
+    ports:
+      - "80:3000"
 
 volumes:
   pgdata:

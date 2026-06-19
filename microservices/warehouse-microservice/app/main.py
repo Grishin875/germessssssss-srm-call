@@ -6,7 +6,10 @@ from app.core.config import settings
 from app.api.v1.endpoints.warehouse import router as warehouse_router
 from shared.core.database import make_engine, make_session_factory, Base
 from shared.core.security import decode_token
-from app.models.warehouse import WarehouseComponent, ProductionStock, Operation, Case  # noqa
+from app.models.warehouse import (  # noqa
+    WarehouseComponent, ProductionStock, Operation, Case, Warehouse, WarehouseStock,
+    Supplier, PurchaseRequest, PurchaseRequestItem,
+)
 
 engine = make_engine(settings.DATABASE_URL)
 session_factory = make_session_factory(engine)
@@ -16,6 +19,11 @@ session_factory = make_session_factory(engine)
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Завести дефолтные склады + разложить текущие остатки по Основному складу
+    from app.services import warehouse_service
+    async with session_factory() as session:
+        await warehouse_service.seed_warehouses(session)
+        await warehouse_service.reconcile_stock(session)
     yield
     await engine.dispose()
 

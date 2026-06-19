@@ -40,6 +40,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tags TEXT"))
         # Канонический маршрут (ТЗ) — тип этапа возврата брака для гейтов AOI/ОТК
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)"))
+        # Руководители проекта (несколько) — только они закрывают заказ и печатают наряд
+        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS managers TEXT"))
     yield
     await engine.dispose()
 

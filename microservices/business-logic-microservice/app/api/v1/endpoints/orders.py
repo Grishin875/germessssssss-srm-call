@@ -42,6 +42,26 @@ def _perm(r: Request, p: str):
     return u
 
 
+# Статусы, означающие завершение заказа — ставить может только руководитель/админ
+CLOSING_STATUSES = {"Завершен", "Завершён"}
+
+
+def _order_managers(order) -> list:
+    """Список id руководителей проекта (JSON в колонке managers)."""
+    try:
+        raw = getattr(order, "managers", None)
+        return [str(m) for m in (json.loads(raw) if raw else [])]
+    except Exception:
+        return []
+
+
+def _is_order_manager(user, order) -> bool:
+    """Руководитель заказа = admin/manager по роли ИЛИ назначен руководителем проекта."""
+    if getattr(user, "role", None) in ("admin", "manager"):
+        return True
+    return str(user.id) in _order_managers(order)
+
+
 async def _audit(db, user, entity_type: str, entity_id, action: str,
                  old_value: str = None, new_value: str = None, details: str = None):
     """Write an audit log entry to audit_log (admin-service table, accessed via text())."""
@@ -233,6 +253,7 @@ class OrderCreate(BaseModel):
     needs_smd: Optional[bool] = None        # переопределение признаков изделия для этого заказа
     is_receiver: Optional[bool] = None
     needs_assembly: Optional[bool] = None
+    managers: Optional[List[str]] = None    # id руководителей проекта
 
 
 class OrderUpdate(BaseModel):
@@ -246,6 +267,7 @@ class OrderUpdate(BaseModel):
     assigned_department: Optional[str] = None
     otk_comment: Optional[str] = None
     tags: Optional[str] = None
+    managers: Optional[List[str]] = None    # id руководителей проекта
 
 
 class SubmitOtkRequest(BaseModel):
@@ -332,6 +354,7 @@ async def list_orders(request: Request, status: Optional[str] = None,
     for o in orders:
         d = _m(o)
         d["assigned_operator_name"] = op_names.get(o.assigned_operator_id) if o.assigned_operator_id else None
+        d["managers"] = _order_managers(o)
         pr = progress.get(o.id, {"total": 0, "done": 0})
         d["stages_total"] = pr["total"]
         d["stages_done"] = pr["done"]
@@ -559,13 +582,26 @@ async def archive_orders(request: Request, search: Optional[str] = None,
 
 @router.get("/orders/{order_id}")
 async def get_order(order_id: int, request: Request):
-    _perm(request, "orders.view")
+    u = _perm(request, "orders.view")
     db = _db(request)
     result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Заказ не найден")
-    return _m(order)
+    d = _m(order)
+    mgr_ids = _order_managers(order)
+    d["managers"] = mgr_ids
+    d["manager_names"] = []
+    if mgr_ids:
+        try:
+            rows = (await db.execute(text(
+                "SELECT id, COALESCE(full_name, username) AS name FROM users WHERE id = ANY(:ids)"
+            ), {"ids": [int(m) for m in mgr_ids if str(m).isdigit()]})).mappings().all()
+            d["manager_names"] = [r["name"] for r in rows]
+        except Exception:
+            logger.warning("Не удалось получить имена руководителей заказа #%s", order_id)
+    d["can_close"] = _is_order_manager(u, order)
+    return d
 
 
 @router.post("/orders", status_code=201)
@@ -608,6 +644,7 @@ async def create_order(body: OrderCreate, request: Request):
         deadline=body.deadline, comment=body.comment, status=initial_status,
         assigned_department=body.assigned_department,
         skipped_stage_ids=json.dumps(list(skipped_ids)) if skipped_ids else None,
+        managers=json.dumps([str(m) for m in body.managers]) if body.managers else None,
     )
     db.add(order)
     await db.flush()
@@ -778,6 +815,13 @@ async def create_order(body: OrderCreate, request: Request):
     await _audit(db, _user(request), "order", order.id, "created",
                  new_value=body.product_name,
                  details=json.dumps({"qty": body.planned_qty, "status": initial_status}, ensure_ascii=False))
+    # Уведомляем назначенных руководителей проекта
+    if body.managers:
+        for mid in body.managers:
+            await notify_user(
+                db, mid, f"Вам назначен заказ №{order.id}",
+                f"{body.product_name} — {body.planned_qty} шт.",
+                link=f"/orders/{order.id}", type_="info")
     await db.commit()
     # Читаем заказ заново чтобы избежать expired attributes
     order_fresh = (await db.execute(select(Order).where(Order.id == order.id))).scalar_one()
@@ -802,6 +846,12 @@ async def update_order(order_id: int, body: OrderUpdate, request: Request):
         raise HTTPException(400, "Нет данных для обновления")
     old = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     old_status = old.status if old else None
+    # Закрыть/завершить заказ может только руководитель проекта или админ/менеджер
+    if update_data.get("status") in CLOSING_STATUSES and not _is_order_manager(u, old):
+        raise HTTPException(403, "Закрыть заказ может только руководитель проекта")
+    # managers приходит списком — храним JSON-строкой в колонке Text
+    if "managers" in update_data:
+        update_data["managers"] = json.dumps([str(m) for m in (update_data["managers"] or [])])
     await db.execute(
         update(Order)
         .where(Order.id == order_id)
@@ -821,6 +871,39 @@ async def update_order(order_id: int, body: OrderUpdate, request: Request):
     result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.scalar_one()
     return _m(order)
+
+
+@router.post("/orders/{order_id}/close")
+async def close_order(order_id: int, request: Request):
+    """Закрыть (завершить) заказ. Доступно только руководителю проекта или админу/менеджеру."""
+    u = _perm(request, "orders.edit")
+    db = _db(request)
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Заказ не найден")
+    if not _is_order_manager(u, order):
+        raise HTTPException(403, "Закрыть заказ может только руководитель проекта")
+    if order.status in ("Завершен", "Завершён", "Отменен", "Отменён"):
+        raise HTTPException(400, f"Заказ уже в терминальном статусе «{order.status}»")
+    # Брак держит заказ: нельзя закрыть, пока есть незавершённые бракованные партии
+    blocking = (await db.execute(text("""
+        SELECT COUNT(*) FROM production_batches
+        WHERE order_id = :oid AND LOWER(COALESCE(status,'')) LIKE '%брак%'
+    """), {"oid": order_id})).scalar_one() or 0
+    if blocking:
+        raise HTTPException(400, "Нельзя закрыть заказ: есть бракованные партии, требующие переделки")
+    old_status = order.status
+    await db.execute(
+        update(Order).where(Order.id == order_id)
+        .values(status="Завершен", updated_at=func.now())
+    )
+    await _audit(db, u, "order", order_id, "closed", old_value=old_status, new_value="Завершен")
+    await _fire_webhooks(db, "order.status_changed", {
+        "order_id": order_id, "product_name": order.product_name,
+        "old_status": old_status, "new_status": "Завершен",
+    })
+    await db.commit()
+    return {"success": True, "status": "Завершен"}
 
 
 async def _return_reserved_components(db, order_id: int) -> int:
