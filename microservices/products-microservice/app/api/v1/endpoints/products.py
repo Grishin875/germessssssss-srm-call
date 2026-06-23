@@ -221,42 +221,89 @@ async def calculate_order_demand(request: Request):
     """
     Проверяет наличие складских компонентов (warehouse_components) для создания заказа.
     Возвращает список компонентов с source='warehouse' и их доступность.
+
+    Поддерживает два режима:
+      • одно изделие — body: {product_name, planned_qty, production_type?}
+      • несколько позиций — body: {positions: [{product_name, qty, production_type?}, ...]}.
+        Потребность суммируется по всем позициям и агрегируется по компоненту.
+    Форма ответа одинакова в обоих режимах.
     """
     _perm(request, "recipes.view")
     db = _db(request)
     body = await request.json()
-    product_name = body.get("product_name", "")
-    planned_qty = int(body.get("planned_qty", 0))
-    production_type = body.get("production_type")
 
-    if not product_name or not planned_qty:
-        raise HTTPException(400, "product_name и planned_qty обязательны")
+    # Нормализуем вход в список позиций (product_name, qty, production_type)
+    raw_positions = body.get("positions")
+    positions: list[dict] = []
+    if raw_positions:
+        for p in raw_positions:
+            pn = (p.get("product_name") or "").strip()
+            qty = int(p.get("qty") or p.get("planned_qty") or 0)
+            if not pn or qty <= 0:
+                continue
+            positions.append({
+                "product_name": pn,
+                "qty": qty,
+                "production_type": p.get("production_type"),
+            })
+        if not positions:
+            raise HTTPException(400, "positions не содержит валидных позиций")
+    else:
+        product_name = body.get("product_name", "")
+        planned_qty = int(body.get("planned_qty", 0))
+        if not product_name or not planned_qty:
+            raise HTTPException(400, "product_name и planned_qty обязательны")
+        positions.append({
+            "product_name": product_name,
+            "qty": planned_qty,
+            "production_type": body.get("production_type"),
+        })
 
-    q = select(Recipe).where(func.lower(Recipe.product_name) == _norm(product_name))
-    if production_type:
-        q = q.where(Recipe.production_type == production_type)
-
-    recipes = (await db.execute(q)).scalars().all()
-    if not recipes:
-        return {"canProduce": False, "message": "Рецептура не найдена", "components": [], "by_department": {}}
-
-    # Берём актуальные остатки из warehouse_components
+    # Берём актуальные остатки из warehouse_components (один раз)
     stock_rows = (await db.execute(text(
         "SELECT name, stock FROM warehouse_components"
     ))).mappings().all()
     stock_map = {_norm(r["name"]): float(r["stock"] or 0) for r in stock_rows}
 
+    # Агрегируем потребность по компоненту через все позиции.
+    # ключ агрегации: (нормализованное имя компонента, production_type, source)
+    agg: dict = {}
+    found_any = False
+
+    for pos in positions:
+        q = select(Recipe).where(func.lower(Recipe.product_name) == _norm(pos["product_name"]))
+        if pos.get("production_type"):
+            q = q.where(Recipe.production_type == pos["production_type"])
+        recipes = (await db.execute(q)).scalars().all()
+        if not recipes:
+            continue
+        found_any = True
+        for rec in recipes:
+            wname = (rec.warehouse_component_name or "").strip() or rec.component_name
+            prod_type = rec.production_type or "SMD"
+            source = rec.source or "warehouse"
+            key = (_norm(wname), prod_type, source)
+            slot = agg.setdefault(key, {
+                "component_name": wname,
+                "production_type": prod_type,
+                "source": source,
+                "required": 0.0,
+            })
+            slot["required"] += float(rec.norm) * pos["qty"]
+
+    if not found_any:
+        return {"canProduce": False, "message": "Рецептура не найдена", "components": [], "by_department": {}}
+
     components = []
     can_produce = True
     by_department: dict = {}  # production_type -> list of components
 
-    for rec in recipes:
-        wname = (rec.warehouse_component_name or "").strip() or rec.component_name
+    for slot in agg.values():
+        wname = slot["component_name"]
+        source = slot["source"]
         avail = stock_map.get(_norm(wname), 0)
-        norm = float(rec.norm)
-        required = norm * planned_qty
+        required = slot["required"]
         shortage = max(0, required - avail)
-        source = rec.source or "warehouse"
 
         # Нехватку считаем только для warehouse-компонентов
         if source == "warehouse" and shortage > 0:
@@ -264,18 +311,15 @@ async def calculate_order_demand(request: Request):
 
         entry = {
             "component_name": wname,
-            "production_type": rec.production_type or "SMD",
+            "production_type": slot["production_type"],
             "source": source,
-            "norm": norm,
             "required": required,
             "available": avail,
             "shortage": shortage if source == "warehouse" else 0,
             "canProduce": shortage == 0 or source != "warehouse",
         }
         components.append(entry)
-
-        dept = rec.production_type or "SMD"
-        by_department.setdefault(dept, []).append(entry)
+        by_department.setdefault(slot["production_type"], []).append(entry)
 
     return {
         "canProduce": can_produce,

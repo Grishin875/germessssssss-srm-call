@@ -268,6 +268,9 @@ export default function PlanningPage() {
                         </div>
                         <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                           {o.product_name}
+                          {(o.positions_count ?? 0) > 1 && (
+                            <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> +{(o.positions_count ?? 1) - 1}</span>
+                          )}
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
                           <span>{o.planned_qty} шт</span>

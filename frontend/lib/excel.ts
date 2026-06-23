@@ -43,7 +43,7 @@ export async function exportOrderExcel(order: {
   planned_qty?: number;
   received_date?: string;
   shipment_date?: string;
-  positions?: { name: string; qty?: number | null }[];
+  positions?: { product_name?: string; name?: string; qty?: number | null; planned_qty?: number | null }[];
 }): Promise<void> {
   const XLSX = await import("xlsx");
   const fmtDate = (d?: string) => {
@@ -62,7 +62,7 @@ export async function exportOrderExcel(order: {
 
   const positions = order.positions ?? [];
   if (positions.length) {
-    positions.forEach((p, i) => aoa.push([i + 1, p.name, p.qty ?? ""]));
+    positions.forEach((p, i) => aoa.push([i + 1, p.product_name ?? p.name ?? "", p.qty ?? p.planned_qty ?? ""]));
   } else {
     // Нет отдельных позиций — выводим основное изделие как единственную строку
     aoa.push([1, order.product_name ?? "", order.planned_qty ?? ""]);

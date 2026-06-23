@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from pydantic import BaseModel
 
 import json
-from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, StageRouteTemplate
+from app.models.business import Order, OrderItem, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, StageRouteTemplate
 from app.services.canonical_route import (
     build_canonical_stages, QC_GATES, FINISHED_GOODS_STAGES, CANONICAL_STAGE_LABELS,
 )
@@ -237,15 +237,22 @@ class ExtraStage(BaseModel):
 
 
 class Position(BaseModel):
-    """Позиция комплектации заказа (для Excel-документа)."""
-    name: str
+    """Позиция заказа: изделие из каталога + количество.
+    Принимает product_name (новое) или name (legacy-алиас)."""
+    product_name: Optional[str] = None
+    name: Optional[str] = None
     qty: Optional[int] = None
+
+    def resolved_name(self) -> str:
+        return (self.product_name or self.name or "").strip()
 
 
 class OrderCreate(BaseModel):
-    product_name: str
-    planned_qty: int
-    positions: Optional[List[Position]] = None   # комплектация — список позиций для Excel
+    product_name: Optional[str] = None        # legacy: одно изделие (для старых вызовов/вебхуков)
+    planned_qty: Optional[int] = None
+    positions: Optional[List[Position]] = None   # позиции заказа (изделие + кол-во)
+    received_date: Optional[str] = None          # дата получения
+    shipment_date: Optional[str] = None          # дата отправки
     received_date: Optional[str] = None          # дата получения
     shipment_date: Optional[str] = None          # дата отправки
     assigned_operator_id: Optional[str] = None
@@ -312,6 +319,47 @@ class DailyProgressRequest(BaseModel):
 
 # ── Orders ───────────────────────────────────────────────────────────────────
 
+async def _build_positions(db, order, with_stages: bool = False):
+    """Список позиций заказа. Реальные позиции из order_items; для legacy-заказов
+    (без order_items) — одна виртуальная позиция из шапки/JSON. При with_stages
+    к каждой позиции прикладываются её этапы (order_item_id)."""
+    items = (await db.execute(
+        select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.sort_order, OrderItem.id)
+    )).scalars().all()
+    if not items:
+        try:
+            jp = json.loads(order.positions) if order.positions else []
+        except Exception:
+            jp = []
+        if jp:
+            return [{"id": None, "product_name": (p.get("product_name") or p.get("name") or ""),
+                     "qty": p.get("qty"), "planned_qty": p.get("qty"), "actual_qty": None,
+                     "status": order.status, "sort_order": i, "stages_total": 0, "stages_done": 0,
+                     "legacy": True} for i, p in enumerate(jp)]
+        return [{"id": None, "product_name": order.product_name, "qty": order.planned_qty,
+                 "planned_qty": order.planned_qty, "actual_qty": order.actual_qty,
+                 "status": order.status, "sort_order": 0, "stages_total": 0, "stages_done": 0,
+                 "legacy": True}]
+    out = []
+    for it in items:
+        pr = (await db.execute(text(
+            "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='done') AS done "
+            "FROM order_stages WHERE order_item_id = :iid"
+        ), {"iid": it.id})).mappings().one()
+        pos = {"id": it.id, "product_name": it.product_name, "qty": it.planned_qty,
+               "planned_qty": it.planned_qty, "actual_qty": it.actual_qty, "status": it.status,
+               "sort_order": it.sort_order, "stages_total": int(pr["total"] or 0),
+               "stages_done": int(pr["done"] or 0)}
+        if with_stages:
+            st = (await db.execute(
+                select(OrderStage).where(OrderStage.order_item_id == it.id)
+                .order_by(OrderStage.sort_order, OrderStage.id)
+            )).scalars().all()
+            pos["stages"] = [{**_m(s), "components": s.components} for s in st]
+        out.append(pos)
+    return out
+
+
 @router.get("/orders")
 async def list_orders(request: Request, status: Optional[str] = None,
                       include_statuses: Optional[str] = None, search: Optional[str] = None,
@@ -365,10 +413,8 @@ async def list_orders(request: Request, status: Optional[str] = None,
     rows = []
     for o in orders:
         d = _m(o)
-        try:
-            d["positions"] = json.loads(o.positions) if o.positions else []
-        except Exception:
-            d["positions"] = []
+        d["positions"] = await _build_positions(db, o)
+        d["positions_count"] = len(d["positions"])
         d["assigned_operator_name"] = op_names.get(o.assigned_operator_id) if o.assigned_operator_id else None
         d["managers"] = _order_managers(o)
         pr = progress.get(o.id, {"total": 0, "done": 0})
@@ -605,10 +651,8 @@ async def get_order(order_id: int, request: Request):
     if not order:
         raise HTTPException(404, "Заказ не найден")
     d = _m(order)
-    try:
-        d["positions"] = json.loads(order.positions) if order.positions else []
-    except Exception:
-        d["positions"] = []
+    d["positions"] = await _build_positions(db, order, with_stages=True)
+    d["positions_count"] = len(d["positions"])
     mgr_ids = _order_managers(order)
     d["managers"] = mgr_ids
     d["manager_names"] = []
@@ -624,233 +668,165 @@ async def get_order(order_id: int, request: Request):
     return d
 
 
+async def _generate_item_production(db, order_id: int, order_item_id: int,
+                                    product_name: str, planned_qty: int, skipped_ids: set):
+    """Авто-генерация этапов (из рецептуры изделия) и производственных партий для ОДНОЙ позиции.
+    Этапы и партии помечаются order_id + order_item_id. Возвращает список созданных batch_id."""
+    pn = _norm(product_name)
+    comps_rows = (await db.execute(text(
+        "SELECT component_name, source, norm, warehouse_component_name, production_type "
+        "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
+    ), {"pn": pn})).mappings().all()
+    stage_comps = [
+        {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
+         "qty": float(r["norm"]) * planned_qty,
+         "source": r["source"] or "warehouse",
+         "production_type": r["production_type"] or ""}
+        for r in comps_rows
+    ]
+    r_stages = (await db.execute(text(
+        "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
+        "required_role, depends_on_previous, transfer_qty "
+        "FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn ORDER BY sort_order, id"
+    ), {"pn": pn})).mappings().all()
+    if skipped_ids:
+        r_stages = [rs for rs in r_stages if rs["id"] not in skipped_ids]
+    if r_stages:
+        min_sort = min((rs["sort_order"] or 0) for rs in r_stages)
+        for rs in r_stages:
+            stage_type = rs["stage_type"] or "assembly"
+            stage_components = [
+                c for c in stage_comps
+                if _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
+            ] or stage_comps
+            db.add(OrderStage(
+                order_id=order_id, order_item_id=order_item_id, stage_type=stage_type,
+                stage_name=rs["stage_name"],
+                status=_initial_stage_status(rs["sort_order"] or 0, min_sort, rs["depends_on_previous"]),
+                sort_order=rs["sort_order"] or 0,
+                required_role=rs["required_role"],
+                depends_on_previous=rs["depends_on_previous"] if rs["depends_on_previous"] is not None else 1,
+                transfer_qty=rs["transfer_qty"] or 0,
+                instructions=rs["instructions"],
+                components_json=json.dumps(stage_components, ensure_ascii=False),
+                comment=rs["description"],
+            ))
+    else:
+        db.add(OrderStage(
+            order_id=order_id, order_item_id=order_item_id, stage_type="assembly",
+            stage_name="Сборка", status="pending", sort_order=0,
+            components_json=json.dumps(stage_comps, ensure_ascii=False),
+        ))
+    types_rows = (await db.execute(text(
+        "SELECT DISTINCT production_type FROM recipes "
+        "WHERE LOWER(TRIM(product_name)) = :pn AND production_type != 'Сборка'"
+    ), {"pn": pn})).all()
+    batch_ids = []
+    for (ptype,) in types_rows:
+        batch_id = await _gen_batch_id(db, ptype)
+        db.add(ProductionBatch(
+            batch_id=batch_id, product_name=product_name.strip(),
+            production_type=ptype, planned_qty=planned_qty,
+            status="Запланировано", order_id=order_id, order_item_id=order_item_id,
+        ))
+        batch_ids.append(batch_id)
+    return batch_ids
+
+
 @router.post("/orders", status_code=201)
 async def create_order(body: OrderCreate, request: Request):
     _perm(request, "orders.create")
     db = _db(request)
 
-    # ── Проверяем компоненты на складе ──────────────────────────────────────
-    recipes_rows = (await db.execute(text("""
-        SELECT component_name, norm, warehouse_component_name
-        FROM recipes WHERE LOWER(TRIM(product_name))=LOWER(TRIM(:pn)) AND production_type!='Сборка'
-    """), {"pn": body.product_name})).mappings().all()
+    # ── Список позиций: новое (positions) или legacy (одно изделие) ──────────
+    items = [(p.resolved_name(), int(p.qty or 0)) for p in (body.positions or []) if p.resolved_name()]
+    if not items and body.product_name:
+        items = [(body.product_name.strip(), int(body.planned_qty or 0))]
+    if not items:
+        raise HTTPException(400, "Укажите хотя бы одну позицию")
+    skipped_ids = set(body.skipped_stage_ids or [])
 
+    # ── Суммарная потребность в компонентах по всем позициям ────────────────
     demand: dict = {}
-    for r in recipes_rows:
-        wname = (r["warehouse_component_name"] or "").strip() or r["component_name"]
-        key = wname.strip().lower()
-        demand.setdefault(key, {"name": wname, "required": 0.0})
-        demand[key]["required"] += float(r["norm"]) * body.planned_qty
+    for pname, pqty in items:
+        rows = (await db.execute(text(
+            "SELECT component_name, norm, warehouse_component_name FROM recipes "
+            "WHERE LOWER(TRIM(product_name))=:pn AND production_type!='Сборка'"
+        ), {"pn": _norm(pname)})).mappings().all()
+        for r in rows:
+            wname = (r["warehouse_component_name"] or "").strip() or r["component_name"]
+            key = wname.strip().lower()
+            demand.setdefault(key, {"name": wname, "required": 0.0})
+            demand[key]["required"] += float(r["norm"]) * pqty
 
     can_produce = True
     missing_components = []
     for key, d in demand.items():
-        # Доступно = остаток − уже зарезервированное под другие заказы
         avail_val = (await db.execute(text(
             "SELECT COALESCE(stock,0) - COALESCE(reserved,0) FROM warehouse_components WHERE LOWER(TRIM(name))=:n"
         ), {"n": key})).scalar_one_or_none()
         available = float(avail_val) if avail_val is not None else 0.0
         if available < d["required"]:
             can_produce = False
-            missing_components.append({
-                "name": d["name"], "required": d["required"], "available": available
-            })
+            missing_components.append({"name": d["name"], "required": d["required"], "available": available})
 
     initial_status = "Создан" if can_produce else "Ожидает компонентов"
 
-    skipped_ids = set(body.skipped_stage_ids or [])
+    # ── Шапка заказа: product_name/planned_qty = сводка по позициям (для legacy-отображений) ──
+    header_name = items[0][0]
+    header_qty = sum(q for _, q in items)
     order = Order(
-        product_name=body.product_name.strip(), planned_qty=body.planned_qty,
-        assigned_operator_id=body.assigned_operator_id, priority=body.priority,
-        deadline=body.deadline, comment=body.comment, status=initial_status,
-        assigned_department=body.assigned_department,
-        skipped_stage_ids=json.dumps(list(skipped_ids)) if skipped_ids else None,
+        product_name=header_name, planned_qty=header_qty,
+        priority=body.priority or "Обычный", deadline=body.deadline, comment=body.comment,
+        status=initial_status, assigned_department=body.assigned_department,
         managers=json.dumps([str(m) for m in body.managers]) if body.managers else None,
-        positions=json.dumps([p.model_dump() for p in body.positions], ensure_ascii=False) if body.positions else None,
+        positions=json.dumps([{"name": n, "qty": q} for n, q in items], ensure_ascii=False),
         received_date=body.received_date, shipment_date=body.shipment_date,
     )
     db.add(order)
     await db.flush()
     await db.refresh(order)
 
-    # ── Автозапуск если назначен оператор и компоненты есть ─────────────────
-    # Автозапуск если есть назначения и компоненты есть
-    first_assignment_id = None
-    if body.stage_assignments:
-        first_assignment_id = next((v for v in body.stage_assignments.values() if v), None)
-    if not first_assignment_id and body.assigned_operator_id:
-        first_assignment_id = body.assigned_operator_id
+    # ── Позиции + производство каждой (этапы из рецептуры + партии) ──────────
+    created_batches = []
+    for i, (pname, pqty) in enumerate(items):
+        item = OrderItem(order_id=order.id, product_name=pname, planned_qty=pqty,
+                         status=initial_status, sort_order=i)
+        db.add(item)
+        await db.flush()
+        await db.refresh(item)
+        if can_produce:
+            created_batches.extend(
+                await _generate_item_production(db, order.id, item.id, pname, pqty, skipped_ids))
 
-    # Компоненты продукта — нужны и для этапов рецептуры, и для extra_stages
-    _all_stage_recipes = (await db.execute(text(
-        "SELECT component_name, source, norm, warehouse_component_name, production_type "
-        "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
-    ), {"pn": _norm(body.product_name)})).mappings().all()
-    stage_comps = [
-        {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
-         "qty": float(r["norm"]) * body.planned_qty,
-         "source": r["source"] or "warehouse",
-         "production_type": r["production_type"] or ""}
-        for r in _all_stage_recipes
-    ]
-
-    if body.use_canonical_route:
-        # Канонический маршрут по ТЗ (12 этапов) — строится по признакам изделия,
-        # независимо от этапов рецептуры.
-        flags = await _resolve_product_flags(db, body.product_name, body)
-        await _add_canonical_stages(db, order.id, flags, stage_comps)
-        if initial_status == "Создан":
-            await db.execute(
-                update(Order).where(Order.id == order.id).values(status="В работе", updated_at=func.now())
-            )
-            initial_status = "В работе"
-    elif (body.stage_assignments or first_assignment_id) and initial_status == "Создан":
-        stage_recipes = _all_stage_recipes
-        r_stages = (await db.execute(text(
-            "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
-            "required_role, depends_on_previous, transfer_qty "
-            "FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn ORDER BY sort_order, id"
-        ), {"pn": _norm(body.product_name)})).mappings().all()
-
-        # Пропускаем этапы, исключённые пользователем для этого заказа
-        if skipped_ids:
-            r_stages = [rs for rs in r_stages if rs["id"] not in skipped_ids]
-        if r_stages:
-            min_sort = min((rs["sort_order"] or 0) for rs in r_stages)
-            for rs in r_stages:
-                stage_type = rs["stage_type"] or "assembly"
-                assigned_uid = (body.stage_assignments or {}).get(str(rs["id"])) or first_assignment_id
-                assigned_name = None
-                if assigned_uid:
-                    try:
-                        assigned_name = (await db.execute(text(
-                            "SELECT COALESCE(full_name, username) FROM users WHERE id=:id"
-                        ), {"id": int(assigned_uid)})).scalar_one_or_none()
-                    except Exception:
-                        logger.warning("Не удалось получить имя пользователя id=%s", assigned_uid)
-                    assigned_name = assigned_name or str(assigned_uid)
-                stage_components = [
-                    c for c in stage_comps
-                    if _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
-                ] or stage_comps
-                db.add(OrderStage(
-                    order_id=order.id, stage_type=stage_type,
-                    stage_name=rs["stage_name"],
-                    status=_initial_stage_status(rs["sort_order"] or 0, min_sort, rs["depends_on_previous"]),
-                    sort_order=rs["sort_order"] or 0,
-                    required_role=rs["required_role"],
-                    depends_on_previous=rs["depends_on_previous"] if rs["depends_on_previous"] is not None else 1,
-                    transfer_qty=rs["transfer_qty"] or 0,
-                    instructions=rs["instructions"],
-                    assigned_to=str(assigned_uid) if assigned_uid else None,
-                    assigned_name=assigned_name,
-                    components_json=json.dumps(stage_components, ensure_ascii=False),
-                    comment=rs["description"],
-                ))
-        else:
-            db.add(OrderStage(
-                order_id=order.id, stage_type="assembly", stage_name="Сборка",
-                status="pending", sort_order=0,
-                assigned_to=str(first_assignment_id) if first_assignment_id else None,
-                components_json=json.dumps(stage_comps, ensure_ascii=False),
-            ))
-        await db.execute(
-            update(Order).where(Order.id == order.id).values(status="В работе", updated_at=func.now())
-        )
-        initial_status = "В работе"
-
-    # ── Дополнительные этапы маршрута (pipeline) ─────────────────────────────
-    if body.extra_stages:
-        for i, es in enumerate(body.extra_stages):
-            assigned_name = None
-            if es.assigned_user_id:
-                try:
-                    assigned_name = (await db.execute(text(
-                        "SELECT COALESCE(full_name, username) FROM users WHERE id=:id"
-                    ), {"id": int(es.assigned_user_id)})).scalar_one_or_none()
-                except Exception:
-                    logger.warning("Не удалось получить имя пользователя id=%s", es.assigned_user_id)
-                assigned_name = assigned_name or es.assigned_user_id
-            # Если пользователь выбрал конкретные компоненты — фильтруем stage_comps,
-            # иначе берём все компоненты подходящие по типу этапа
-            if es.components:
-                es_comps = [c for c in stage_comps if c.get("name") in es.components]
-            else:
-                es_comps = [
-                    c for c in stage_comps
-                    if _component_matches_stage(c.get("source", "warehouse"), es.stage_type, c.get("production_type", ""))
-                ]
-            db.add(OrderStage(
-                order_id=order.id, stage_type=es.stage_type,
-                stage_name=es.stage_name, status="pending",
-                sort_order=es.sort_order if es.sort_order is not None else (500 + i),
-                depends_on_previous=es.depends_on_previous if es.depends_on_previous is not None else 1,
-                required_role=es.required_role,
-                assigned_to=es.assigned_user_id,
-                assigned_name=assigned_name,
-                components_json=json.dumps(es_comps, ensure_ascii=False),
-            ))
-        if initial_status == "Создан":
-            await db.execute(
-                update(Order).where(Order.id == order.id).values(status="В работе", updated_at=func.now())
-            )
-            initial_status = "В работе"
-
-    # ── Резервируем компоненты если всё есть (физически на складе; уменьшается «доступно») ──
+    # ── Резерв компонентов (суммарно по всем позициям, на уровне заказа) ─────
     if can_produce and demand:
         op_prefix = f"ORDER-RESERVE-{order.id}"
         for idx, (key, d) in enumerate(demand.items()):
-            # Guard available (stock-reserved) >= qty: параллельный заказ мог уже занять остаток
             res = await db.execute(text(
                 "UPDATE warehouse_components SET reserved=COALESCE(reserved,0)+:qty "
                 "WHERE LOWER(TRIM(name))=:n AND COALESCE(stock,0) - COALESCE(reserved,0) >= :qty"
             ), {"qty": d["required"], "n": key})
             if res.rowcount == 0:
-                raise HTTPException(
-                    409, f"Компонент «{d['name']}» закончился на складе во время оформления заказа")
-            await db.execute(text("""
-                INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-                VALUES ('RESERVE', :cn, :qty, :note, :oid)
-            """), {
-                "cn": d["name"], "qty": d["required"],
-                "note": f"Резерв под заказ #{order.id} / {body.product_name}",
-                "oid": f"{op_prefix}-{idx}",
-            })
+                raise HTTPException(409, f"Компонент «{d['name']}» закончился на складе во время оформления заказа")
+            await db.execute(text(
+                "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+                "VALUES ('RESERVE', :cn, :qty, :note, :oid)"
+            ), {"cn": d["name"], "qty": d["required"],
+                "note": f"Резерв под заказ #{order.id}", "oid": f"{op_prefix}-{idx}"})
 
-    # ── Создаём производственные партии ─────────────────────────────────────
-    types_rows = (await db.execute(text("""
-        SELECT DISTINCT production_type FROM recipes
-        WHERE LOWER(TRIM(product_name)) = LOWER(TRIM(:pn)) AND production_type != 'Сборка'
-    """), {"pn": body.product_name})).all()
-
-    created_batches = []
-    for (ptype,) in types_rows:
-        batch_id = await _gen_batch_id(db, ptype)
-        batch = ProductionBatch(
-            batch_id=batch_id, product_name=body.product_name.strip(),
-            production_type=ptype, planned_qty=body.planned_qty,
-            status="Запланировано", order_id=order.id,
-            comment=body.comment or "",
-        )
-        db.add(batch)
-        created_batches.append(batch_id)
-
-    await _audit(db, _user(request), "order", order.id, "created",
-                 new_value=body.product_name,
-                 details=json.dumps({"qty": body.planned_qty, "status": initial_status}, ensure_ascii=False))
-    # Уведомляем назначенных руководителей проекта
+    await _audit(db, _user(request), "order", order.id, "created", new_value=header_name,
+                 details=json.dumps({"positions": len(items), "qty": header_qty, "status": initial_status}, ensure_ascii=False))
     if body.managers:
         for mid in body.managers:
-            await notify_user(
-                db, mid, f"Вам назначен заказ №{order.id}",
-                f"{body.product_name} — {body.planned_qty} шт.",
-                link=f"/orders/{order.id}", type_="info")
+            await notify_user(db, mid, f"Вам назначен заказ №{order.id}",
+                              f"{len(items)} позиц., всего {header_qty} шт.",
+                              link=f"/orders/{order.id}", type_="info")
     await db.commit()
-    # Читаем заказ заново чтобы избежать expired attributes
     order_fresh = (await db.execute(select(Order).where(Order.id == order.id))).scalar_one()
-    msg = f"Заказ создан. Партий: {len(created_batches)}."
+    msg = f"Заказ создан. Позиций: {len(items)}, партий: {len(created_batches)}."
     if not can_produce:
-        msg = f"Заказ создан, ожидает компонентов ({len(missing_components)} позиций не хватает)."
+        msg = f"Заказ создан, ожидает компонентов ({len(missing_components)} не хватает)."
     return {
         **_m(order_fresh),
         "created_batches": created_batches,
@@ -1418,10 +1394,11 @@ async def complete_batch(body: CompleteRequest, request: Request):
     otk_id = await _gen_otk_id(db, batch.production_type, batch.operator_id)
     await db.execute(text("""
         INSERT INTO otk_batches (batch_id, product_name, production_type, released_qty, maker_id,
-                                  status, receive_date, source_batch_id, order_id)
-        VALUES (:bid, :pn, :pt, :qty, :mid, 'Принята', NOW(), :src, :oid)
+                                  status, receive_date, source_batch_id, order_id, order_item_id)
+        VALUES (:bid, :pn, :pt, :qty, :mid, 'Принята', NOW(), :src, :oid, :iid)
     """), {"bid": otk_id, "pn": batch.product_name, "pt": batch.production_type,
-           "qty": actual, "mid": batch.operator_id, "src": body.batchId, "oid": batch.order_id})
+           "qty": actual, "mid": batch.operator_id, "src": body.batchId, "oid": batch.order_id,
+           "iid": batch.order_item_id})
 
     if batch.order_id:
         from app.services.order_status_manager import auto_update_order_status
@@ -1565,11 +1542,12 @@ async def submit_otk(order_id: int, body: SubmitOtkRequest, request: Request):
         otk_id = await _gen_otk_id(db, batch.production_type, str(u.id))
         await db.execute(text("""
             INSERT INTO otk_batches (batch_id, product_name, production_type, released_qty, maker_id,
-                                      status, receive_date, source_batch_id, order_id)
-            VALUES (:bid, :pn, :pt, :qty, :mid, 'Принята', NOW(), :src, :oid)
+                                      status, receive_date, source_batch_id, order_id, order_item_id)
+            VALUES (:bid, :pn, :pt, :qty, :mid, 'Принята', NOW(), :src, :oid, :iid)
         """), {
             "bid": otk_id, "pn": batch.product_name, "pt": batch.production_type,
-            "qty": actual, "mid": str(u.id), "src": batch.batch_id, "oid": order_id
+            "qty": actual, "mid": str(u.id), "src": batch.batch_id, "oid": order_id,
+            "iid": batch.order_item_id
         })
         otk_ids.append(otk_id)
 
@@ -2409,11 +2387,22 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
     """После завершения этапа: записать на склад (если warehouse) и активировать
     следующий этап(ы). Вызывается из обоих путей завершения — ручного complete_stage
     и автоматического (когда все испол(assignees) сдали свою часть)."""
-    # Если этап — склад готовой продукции, записываем в finished_goods переданное количество
-    if stage.stage_type in FINISHED_GOODS_STAGES and order and order.product_name:
+    # Если этап — склад готовой продукции, записываем в finished_goods переданное количество.
+    # Имя изделия берём у позиции (order_item) этапа; для legacy — у шапки заказа.
+    if stage.stage_type in FINISHED_GOODS_STAGES and order:
+        fg_name = order.product_name
+        fg_planned = int(order.planned_qty or 0)
+        if stage.order_item_id is not None:
+            _it = (await db.execute(
+                select(OrderItem.product_name, OrderItem.planned_qty)
+                .where(OrderItem.id == stage.order_item_id)
+            )).first()
+            if _it:
+                fg_name = _it[0] or fg_name
+                fg_planned = int(_it[1] or 0)
         done_total = sum(int(a.qty_done or 0) for a in stage_assignees)
-        qty = int(stage.transferred_qty or 0) or done_total or int(order.planned_qty or 0)
-        if qty > 0:
+        qty = int(stage.transferred_qty or 0) or done_total or fg_planned
+        if fg_name and qty > 0:
             await db.execute(text("""
                 INSERT INTO finished_goods (product_name, good_qty, defect_qty, total_qty, updated_at)
                 VALUES (:pn, :qty, 0, :qty, NOW())
@@ -2421,7 +2410,7 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
                 SET good_qty = finished_goods.good_qty + :qty,
                     total_qty = finished_goods.total_qty + :qty,
                     updated_at = NOW()
-            """), {"pn": order.product_name, "qty": qty})
+            """), {"pn": fg_name, "qty": qty})
 
     # Активировать следующий этап если указан next_stage_id
     if stage.next_stage_id:
@@ -2438,9 +2427,12 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
 
     # Логика по sort_order: после завершения этапа разблокируем следующий
     # уровень параллельной группы, если все этапы предыдущих уровней завершены.
-    all_stages = (await db.execute(
-        select(OrderStage).where(OrderStage.order_id == stage.order_id).order_by(OrderStage.sort_order)
-    )).scalars().all()
+    # Скоуп — по ПОЗИЦИИ (order_item_id), чтобы позиции продвигались независимо;
+    # для legacy-этапов (order_item_id IS NULL) — по всему заказу.
+    _stages_q = select(OrderStage).where(OrderStage.order_id == stage.order_id)
+    if stage.order_item_id is not None:
+        _stages_q = _stages_q.where(OrderStage.order_item_id == stage.order_item_id)
+    all_stages = (await db.execute(_stages_q.order_by(OrderStage.sort_order))).scalars().all()
     # Текущий этап уже помечен done в БД, но в кэше all_stages — старый статус.
     done_ids = {s.id for s in all_stages if s.status == "done"} | {stage.id}
 

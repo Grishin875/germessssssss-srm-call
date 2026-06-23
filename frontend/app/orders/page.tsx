@@ -7,10 +7,8 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge, PriorityBadge } from "../../components/ui/Badge";
 import { Modal } from "../../components/ui/Modal";
-import { api, Order, Recipe, Component, User, RecipeStage, ProductCatalogItem, SystemRoleItem } from "../../lib/api";
-import { useStageTypes } from "../../hooks/useStageTypes";
+import { api, Order, Recipe, User, ProductCatalogItem } from "../../lib/api";
 import { usePriorities } from "../../hooks/usePriorities";
-import { StagesBuilder, StageRow } from "../../components/ui/StagesBuilder";
 import { ROLE_LABELS } from "../../lib/roles";
 import { exportToExcel, parseExcelFile, downloadTemplate, Row as ExcelRow } from "../../lib/excel";
 import { toast } from "../../components/ui/Toast";
@@ -54,11 +52,7 @@ function ProductSelect({ value, onChange, products }: {
 export default function OrdersPage() {
   const { user, loading, hasPermission } = useAuth();
   const { t } = useI18n();
-  const { byCode: stageByCode, stageTypes } = useStageTypes();
   const { priorities } = usePriorities();
-  const STAGE_TYPE_COLORS: Record<string, string> = Object.fromEntries(
-    ["smd","assembly","3d_print","engraving","case","warehouse"].map(c => [c, stageByCode(c).color])
-  );
   const router = useRouter();
 
   const [orders, setOrders] = useState<Order[]>([]);
@@ -67,10 +61,8 @@ export default function OrdersPage() {
   const [search, setSearch] = useState("");
 
   const [allRecipes, setAllRecipes] = useState<Recipe[]>([]);
-  const [allComponents, setAllComponents] = useState<Component[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [catalog, setCatalog] = useState<ProductCatalogItem[]>([]);
-  const [systemRoles, setSystemRoles] = useState<SystemRoleItem[]>([]);
   const [customFieldDefs, setCustomFieldDefs] = useState<import("../../lib/api").CustomFieldDef[]>([]);
   const [cfField, setCfField] = useState("");
   const [cfValue, setCfValue] = useState("");
@@ -91,7 +83,7 @@ export default function OrdersPage() {
   const [visibleCols, setVisibleCols] = useState<Set<string>>(new Set(ALL_COLS));
   const [showColSettings, setShowColSettings] = useState(false);
   const [favorites, setFavorites] = useState<Set<number>>(new Set());
-  const [orderTemplates, setOrderTemplates] = useState<{ name: string; form: typeof form }[]>([]);
+  const [orderTemplates, setOrderTemplates] = useState<{ name: string; form: typeof form; positions?: { product_name: string; qty: string }[] }[]>([]);
   useEffect(() => {
     try {
       const vc = localStorage.getItem("germess_order_cols");
@@ -114,21 +106,11 @@ export default function OrdersPage() {
   }
 
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" });
-  const [positions, setPositions] = useState<{ name: string; qty: string }[]>([]);
+  const [form, setForm] = useState({ priority: "Обычный", deadline: "", comment: "", received_date: "", shipment_date: "" });
+  const [positions, setPositions] = useState<{ product_name: string; qty: string }[]>([{ product_name: "", qty: "" }]);
   const [managers, setManagers] = useState<string[]>([]);
-  const [stageAssignments, setStageAssignments] = useState<Record<number, string>>({});
-  const [skippedStages, setSkippedStages] = useState<Set<number>>(new Set());
-  const [productStages, setProductStages] = useState<RecipeStage[]>([]);
-  const [productRole, setProductRole] = useState<string | null>(null);
-  const [loadingStages, setLoadingStages] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  const [extraStages, setExtraStages] = useState<StageRow[]>([]);
-  // Канонический маршрут по ТЗ (12 этапов)
-  const [useCanonical, setUseCanonical] = useState(false);
-  const [canonFlags, setCanonFlags] = useState({ needs_smd: true, is_receiver: false, needs_assembly: true });
 
   // Excel импорт
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -176,10 +158,8 @@ export default function OrdersPage() {
     if (!user) return;
     load();
     api.getRecipes().then(setAllRecipes).catch(console.error);
-    api.getComponents().then(setAllComponents).catch(console.error);
     api.getUsers().then(setAllUsers).catch(console.error);
     api.getCatalog({ active_only: true }).then(setCatalog).catch(console.error);
-    api.getSystemRoles().then(r => setSystemRoles(r.filter(x => x.is_active))).catch(console.error);
     api.getCustomFieldDefs().then(setCustomFieldDefs).catch(console.error);
   }, [user]);
 
@@ -192,8 +172,7 @@ export default function OrdersPage() {
     if (!hasPermission("orders.create")) return;
     createParamHandled.current = true;
     setShowCreate(true); setError("");
-    setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
-    setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
+    setForm({ priority: "Обычный", deadline: "", comment: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([{ product_name: "", qty: "" }]);
   }, [hasPermission]);
 
   // Перезагрузка при изменении фильтра по кастомному полю (серверный фильтр)
@@ -201,37 +180,6 @@ export default function OrdersPage() {
     if (!user) return;
     load();
   }, [cfField, cfValue, showArchived]);
-
-  useEffect(() => {
-    if (!form.product_name || !allRecipes.find(r => r.product_name === form.product_name)) {
-      setProductStages([]); setStageAssignments({}); setProductRole(null); setSkippedStages(new Set()); return;
-    }
-    setLoadingStages(true);
-    // Префилл признаков канонического маршрута из каталога изделия
-    api.getCatalog({ q: form.product_name }).then(items => {
-      const it = items.find(i => i.name === form.product_name);
-      if (it) setCanonFlags({
-        needs_smd: it.needs_smd !== false,
-        is_receiver: it.is_receiver === true,
-        needs_assembly: it.needs_assembly !== false,
-      });
-    }).catch(() => {});
-    api.getProductStages(form.product_name)
-      .then((data: unknown) => {
-        if (Array.isArray(data)) {
-          setProductStages(data as RecipeStage[]);
-          setProductRole(null);
-        } else {
-          const d = data as { stages: RecipeStage[]; assigned_role?: string };
-          setProductStages(d.stages || []);
-          setProductRole(d.assigned_role || null);
-        }
-        setStageAssignments({});
-        setSkippedStages(new Set());
-      })
-      .catch(() => { setProductStages([]); setProductRole(null); })
-      .finally(() => setLoadingStages(false));
-  }, [form.product_name]);
 
   async function load() {
     setFetching(true);
@@ -246,55 +194,25 @@ export default function OrdersPage() {
   }
 
   async function createOrder() {
-    if (!form.product_name.trim() || !form.planned_qty) { setError("Заполните обязательные поля"); return; }
+    // Позиции заказа: изделие + кол-во. Пустые по наименованию отбрасываем.
+    const cleanPositions = positions
+      .map(p => ({ product_name: p.product_name.trim(), qty: Math.max(1, Math.round(Number(p.qty) || 0)) }))
+      .filter(p => p.product_name);
+    if (cleanPositions.length === 0) { setError("Добавьте хотя бы одну позицию с изделием"); return; }
     setSaving(true); setError("");
     try {
-      // Назначения только для НЕ пропущенных этапов
-      const activeAssignments = Object.fromEntries(
-        Object.entries(stageAssignments).filter(([sid, v]) => v && !skippedStages.has(Number(sid)))
-      );
-      const firstAssignment = Object.values(activeAssignments).find(v => v) || "";
       const payload: Record<string, unknown> = {
-        ...form,
-        planned_qty: Number(form.planned_qty),
-        assigned_operator_id: firstAssignment || undefined,
-        stage_assignments: Object.keys(activeAssignments).length > 0 ? activeAssignments : undefined,
-        skipped_stage_ids: skippedStages.size > 0 ? Array.from(skippedStages) : undefined,
+        priority: form.priority,
+        deadline: form.deadline,
+        received_date: form.received_date,
+        shipment_date: form.shipment_date,
+        comment: form.comment,
+        positions: cleanPositions,
       };
       if (managers.length > 0) payload.managers = managers;
-      if (!payload.assigned_operator_id) delete payload.assigned_operator_id;
-      if (!payload.stage_assignments) delete payload.stage_assignments;
-      if (!payload.skipped_stage_ids) delete payload.skipped_stage_ids;
-      if (useCanonical) {
-        payload.use_canonical_route = true;
-        payload.needs_smd = canonFlags.needs_smd;
-        payload.is_receiver = canonFlags.is_receiver;
-        payload.needs_assembly = canonFlags.needs_assembly;
-      }
-      if (extraStages.length > 0) {
-        (payload as Record<string, unknown>).extra_stages = extraStages.map(s => ({
-          stage_type: s.stage_type,
-          stage_name: s.stage_name || s.stage_type,
-          assigned_user_id: null,
-          sort_order: s.sort_order,
-          depends_on_previous: s.depends_on_previous,
-          required_role: s.required_role || null,
-          components: s.components ?? [],
-        }));
-      }
-      // Комплектация — позиции (название + кол-во); пустые по имени отбрасываем
-      const cleanPositions = positions
-        .map(p => {
-          const n = Number(p.qty);
-          return { name: p.name.trim(), qty: p.qty === "" || isNaN(n) ? null : Math.round(n) };
-        })
-        .filter(p => p.name);
-      if (cleanPositions.length > 0) payload.positions = cleanPositions;
       await api.createOrder(payload as Partial<Order>);
       setShowCreate(false);
-      setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
-      setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
-      setUseCanonical(false); setCanonFlags({ needs_smd: true, is_receiver: false, needs_assembly: true });
+      setForm({ priority: "Обычный", deadline: "", comment: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([{ product_name: "", qty: "" }]);
       load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
     setSaving(false);
@@ -355,8 +273,7 @@ export default function OrdersPage() {
         const prRaw = String(r["Приоритет"] ?? r["priority"] ?? "Обычный").trim();
         const deadlineRaw = String(r["Срок (ГГГГ-ММ-ДД)"] ?? r["Срок"] ?? r["deadline"] ?? "").trim();
         const payload: Partial<Order> = {
-          product_name: name,
-          planned_qty: qty,
+          positions: [{ product_name: name, qty: Math.max(1, Math.round(qty)) }],
           priority: priorities.has(prRaw) ? prRaw : "Обычный",
           assigned_department: String(r["Отдел"] ?? r["assigned_department"] ?? "").trim() || undefined,
           comment: String(r["Комментарий"] ?? r["comment"] ?? "").trim() || undefined,
@@ -453,8 +370,11 @@ export default function OrdersPage() {
   }
   async function duplicateOrder(o: Order) {
     try {
+      const dupPositions = (o.positions && o.positions.length > 0)
+        ? o.positions.map(p => ({ product_name: p.product_name || p.name || "", qty: Math.max(1, Math.round(Number(p.qty ?? p.planned_qty) || 0)) })).filter(p => p.product_name)
+        : [{ product_name: o.product_name, qty: Math.max(1, Math.round(Number(o.planned_qty) || 0)) }];
       await api.createOrder({
-        product_name: o.product_name, planned_qty: o.planned_qty,
+        positions: dupPositions,
         priority: o.priority, deadline: o.deadline,
         comment: o.comment, assigned_department: o.assigned_department,
       });
@@ -463,17 +383,21 @@ export default function OrdersPage() {
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
   }
   function saveOrderTemplate() {
-    if (!form.product_name.trim()) { toast.warning("Заполните форму заказа"); return; }
-    const name = prompt("Название шаблона заказа:", form.product_name);
+    const firstName = positions.find(p => p.product_name.trim())?.product_name.trim();
+    if (!firstName) { toast.warning("Добавьте хотя бы одну позицию"); return; }
+    const name = prompt("Название шаблона заказа:", firstName);
     if (!name?.trim()) return;
-    const next = [...orderTemplates.filter(t => t.name !== name.trim()), { name: name.trim(), form: { ...form } }];
+    const next = [...orderTemplates.filter(t => t.name !== name.trim()), { name: name.trim(), form: { ...form }, positions: positions.map(p => ({ ...p })) }];
     setOrderTemplates(next);
     localStorage.setItem("germess_order_templates", JSON.stringify(next));
     toast.success("Шаблон заказа сохранён");
   }
   function applyOrderTemplate(name: string) {
     const t = orderTemplates.find(x => x.name === name);
-    if (t) setForm({ ...t.form });
+    if (t) {
+      setForm({ ...t.form });
+      setPositions(t.positions && t.positions.length > 0 ? t.positions.map(p => ({ ...p })) : [{ product_name: "", qty: "" }]);
+    }
   }
   function printOrderCard(o: Order) {
     const w = window.open("", "_blank", "width=720,height=900");
@@ -504,25 +428,6 @@ export default function OrdersPage() {
     const fromRecipes = allRecipes.map(r => r.product_name);
     return [...new Set([...fromCatalog, ...fromRecipes])].sort();
   }, [catalog, allRecipes]);
-
-  function getUsersForStage(stage: RecipeStage): User[] {
-    if (!stage.required_role) return allUsers.filter(u => u.is_active);
-    return allUsers.filter(u => u.is_active && u.role === stage.required_role);
-  }
-
-  const demandRows = useMemo(() => {
-    const qty = Number(form.planned_qty);
-    if (!form.product_name.trim() || !qty || qty <= 0) return [];
-    const recipeRows = allRecipes.filter(r => r.product_name === form.product_name);
-    if (!recipeRows.length) return [];
-    const stockMap: Record<string, number> = {};
-    allComponents.forEach(c => { stockMap[c.name] = c.stock ?? 0; });
-    return recipeRows.map(r => {
-      const required = Math.ceil(r.norm * qty);
-      const available = stockMap[r.warehouse_component_name || r.component_name] ?? stockMap[r.component_name] ?? 0;
-      return { component_name: r.component_name, required, available, shortage: Math.max(0, required - available) };
-    });
-  }, [form.product_name, form.planned_qty, allRecipes, allComponents]);
 
   if (loading || !user) return null;
 
@@ -564,9 +469,6 @@ export default function OrdersPage() {
   const pageClamped = Math.min(page, totalPages);
   const paged = filtered.slice((pageClamped - 1) * PAGE_SIZE, pageClamped * PAGE_SIZE);
 
-  const hasShortage = demandRows.some(r => r.shortage > 0);
-  const hasAssignment = Object.values(stageAssignments).some(v => v);
-
   return (
     <AppLayout>
       <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -575,8 +477,7 @@ export default function OrdersPage() {
           {hasPermission("orders.create") && (
             <Button onClick={() => {
               setShowCreate(true); setError("");
-              setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
-              setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
+              setForm({ priority: "Обычный", deadline: "", comment: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([{ product_name: "", qty: "" }]);
             }}>{t("orders.create")}</Button>
           )}
         </div>
@@ -767,7 +668,14 @@ export default function OrdersPage() {
                         <td><button onClick={() => toggleFav(o.id)} title="В избранное" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, color: favorites.has(o.id) ? "#f59e0b" : "var(--border)" }}>{favorites.has(o.id) ? "★" : "☆"}</button></td>
                       )}
                       {visibleCols.has("id") && <td className="font-mono">#{o.id}</td>}
-                      {visibleCols.has("product") && <td style={{ fontWeight: 500 }}>{o.product_name}</td>}
+                      {visibleCols.has("product") && (
+                        <td style={{ fontWeight: 500 }}>
+                          {o.product_name}
+                          {(o.positions_count ?? 0) > 1 && (
+                            <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }} title={`Ещё ${(o.positions_count ?? 1) - 1} позиц.`}>+{(o.positions_count ?? 1) - 1}</span>
+                          )}
+                        </td>
+                      )}
                       {visibleCols.has("qty") && <td>{o.planned_qty} шт</td>}
                       {visibleCols.has("priority") && <td><PriorityBadge priority={o.priority} /></td>}
                       {visibleCols.has("progress") && (
@@ -889,27 +797,43 @@ export default function OrdersPage() {
             )}
           </div>
 
+          {/* Позиции заказа — изделие из рецептуры + количество. У каждой позиции своё производство. */}
           <div>
-            <label>Изделие *</label>
-            <ProductSelect value={form.product_name} onChange={v => setForm(f => ({ ...f, product_name: v }))} products={productNames} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>
+                Позиции заказа * {positions.length > 0 && <span style={{ fontWeight: 400 }}>· {positions.length}</span>}
+              </span>
+              <Button size="sm" variant="ghost" onClick={() => setPositions(p => [...p, { product_name: "", qty: "" }])}>+ Позиция</Button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {positions.map((p, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)", width: 18, textAlign: "right" }}>{i + 1}</span>
+                  <div style={{ flex: 1 }}>
+                    <ProductSelect value={p.product_name} products={productNames}
+                      onChange={v => setPositions(arr => arr.map((x, j) => j === i ? { ...x, product_name: v } : x))} />
+                  </div>
+                  <input style={{ width: 90 }} type="number" min="1" placeholder="Кол-во" value={p.qty}
+                    onChange={e => setPositions(arr => arr.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
+                  <button onClick={() => setPositions(arr => arr.length > 1 ? arr.filter((_, j) => j !== i) : arr)}
+                    disabled={positions.length <= 1}
+                    style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: positions.length > 1 ? "pointer" : "not-allowed", opacity: positions.length > 1 ? 1 : 0.4, fontSize: 16 }} title="Удалить позицию">×</button>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label>Количество *</label>
-              <input type="number" value={form.planned_qty} onChange={e => setForm(f => ({ ...f, planned_qty: e.target.value }))} placeholder="0" min="1" />
-            </div>
             <div style={{ flex: 1 }}>
               <label>Приоритет</label>
               <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
                 {priorities.filter(p => p.is_active).sort((a,b) => b.sort_weight - a.sort_weight).map(p => <option key={p.code} value={p.label}>{p.label}</option>)}
               </select>
             </div>
-          </div>
-
-          <div>
-            <label>Срок выполнения</label>
-            <input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} />
+            <div style={{ flex: 1 }}>
+              <label>Срок выполнения</label>
+              <input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} />
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 12 }}>
@@ -921,33 +845,6 @@ export default function OrdersPage() {
               <label>Дата отправки</label>
               <input type="date" value={form.shipment_date || ""} onChange={e => setForm(f => ({ ...f, shipment_date: e.target.value }))} />
             </div>
-          </div>
-
-          {/* Комплект — несколько позиций. Попадают в Excel-файл заказа. */}
-          <div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>
-                Комплект — позиции {positions.length > 0 && <span style={{ fontWeight: 400 }}>· {positions.length}</span>}
-              </span>
-              <Button size="sm" variant="ghost" onClick={() => setPositions(p => [...p, { name: "", qty: "" }])}>+ Позиция</Button>
-            </div>
-            {positions.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Нет позиций. Нажмите «+ Позиция», чтобы добавить содержимое комплекта.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {positions.map((p, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)", width: 18, textAlign: "right" }}>{i + 1}</span>
-                    <input style={{ flex: 1 }} placeholder="Наименование позиции" value={p.name}
-                      onChange={e => setPositions(arr => arr.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
-                    <input style={{ width: 90 }} type="number" min="0" placeholder="Кол-во" value={p.qty}
-                      onChange={e => setPositions(arr => arr.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
-                    <button onClick={() => setPositions(arr => arr.filter((_, j) => j !== i))}
-                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16 }} title="Удалить позицию">×</button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
           <div>
@@ -975,201 +872,6 @@ export default function OrdersPage() {
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Печать наряда и закрытие заказа доступны только руководителям проекта (или администратору).</div>
           </div>
-
-          {/* Канонический маршрут по ТЗ (12 этапов) */}
-          <div style={{ padding: "12px 14px", borderRadius: 10, background: useCanonical ? "var(--primary-light)" : "var(--bg-secondary)", border: `1px solid ${useCanonical ? "color-mix(in srgb, var(--primary) 45%, transparent)" : "var(--border)"}` }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-              <input type="checkbox" checked={useCanonical} onChange={e => setUseCanonical(e.target.checked)} />
-              <span style={{ fontWeight: 600, fontSize: 13.5 }}>Маршрут по ТЗ (12 этапов)</span>
-              <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>распределение → СМД → AOI → … → отгрузка</span>
-            </label>
-            {useCanonical && (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                    <input type="checkbox" checked={canonFlags.needs_smd} onChange={e => setCanonFlags(f => ({ ...f, needs_smd: e.target.checked }))} />
-                    Блок СМД (монтаж + AOI + гравировка)
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                    <input type="checkbox" checked={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, is_receiver: e.target.checked }))} />
-                    Приёмник (после СМД — прошивка)
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", opacity: canonFlags.is_receiver ? 0.5 : 1 }}>
-                    <input type="checkbox" checked={canonFlags.needs_assembly} disabled={canonFlags.is_receiver} onChange={e => setCanonFlags(f => ({ ...f, needs_assembly: e.target.checked }))} />
-                    Сборка РЭА (склад РЭА → выдача → сборка → ОТК)
-                  </label>
-                </div>
-                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
-                  Этапы построятся автоматически по признакам изделия. Гейты AOI и ОТК возвращают брак на предыдущий этап.
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Этапы маршрута и назначение исполнителя */}
-          {!useCanonical && form.product_name && productNames.includes(form.product_name) && (
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>
-                  Этапы маршрута и исполнители
-                </span>
-                {productStages.length > 0 && (
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                    {productStages.length - skippedStages.size} из {productStages.length} включено
-                  </span>
-                )}
-              </div>
-
-              {loadingStages ? (
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Загрузка...</div>
-              ) : productStages.length > 0 ? (
-                // Есть этапы — по каждому тумблер включения + исполнитель
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {productStages.map(stage => {
-                    const color = STAGE_TYPE_COLORS[stage.stage_type] ?? "#6b7280";
-                    const usersForStage = getUsersForStage(stage);
-                    const enabled = !skippedStages.has(stage.id);
-                    const toggle = () => setSkippedStages(prev => {
-                      const next = new Set(prev);
-                      if (next.has(stage.id)) next.delete(stage.id); else next.add(stage.id);
-                      return next;
-                    });
-                    return (
-                      <div key={stage.id} style={{
-                        padding: "10px 14px", borderRadius: 10,
-                        background: enabled ? "var(--bg-secondary)" : "var(--bg-tertiary)",
-                        border: `1px solid ${enabled ? color + "33" : "var(--border)"}`,
-                        opacity: enabled ? 1 : 0.6, transition: "opacity 0.15s, border-color 0.15s",
-                      }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: enabled ? 8 : 0 }}>
-                          <div style={{ width: 3, height: 20, borderRadius: 2, background: enabled ? color : "var(--text-muted)", flexShrink: 0 }} />
-                          <span style={{ fontWeight: 600, fontSize: 14, textDecoration: enabled ? "none" : "line-through", color: enabled ? "var(--text)" : "var(--text-muted)" }}>
-                            {stage.stage_name}
-                          </span>
-                          {stage.required_role && (
-                            <span style={{ fontSize: 11, fontWeight: 600, padding: "1px 7px", borderRadius: 20, background: color + "20", color }}>
-                              {ROLE_LABELS[stage.required_role] ?? stage.required_role}
-                            </span>
-                          )}
-                          {/* Тумблер включения этапа */}
-                          <button
-                            type="button"
-                            onClick={toggle}
-                            title={enabled ? "Пропустить этап в этом заказе" : "Включить этап"}
-                            style={{
-                              marginLeft: "auto", flexShrink: 0, position: "relative",
-                              width: 38, height: 22, borderRadius: 99, border: "none", cursor: "pointer",
-                              background: enabled ? color : "var(--border)", transition: "background 0.15s", padding: 0,
-                            }}
-                          >
-                            <span style={{
-                              position: "absolute", top: 2, left: enabled ? 18 : 2,
-                              width: 18, height: 18, borderRadius: "50%", background: "#fff",
-                              transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-                            }} />
-                          </button>
-                        </div>
-                        {enabled && (
-                          <select
-                            value={stageAssignments[stage.id] ?? ""}
-                            onChange={e => setStageAssignments(prev => ({ ...prev, [stage.id]: e.target.value }))}
-                            style={{ width: "100%" }}
-                          >
-                            <option value="">— Назначить позже —</option>
-                            {usersForStage.map(u => (
-                              <option key={u.id} value={String(u.id)}>
-                                {u.full_name || u.username} ({ROLE_LABELS[u.role] ?? u.role})
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : productRole ? (
-                // Нет этапов но есть роль — один выбор
-                <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-                    {ROLE_LABELS[productRole] ?? productRole}
-                  </div>
-                  <select
-                    value={stageAssignments[0] ?? ""}
-                    onChange={e => setStageAssignments({ 0: e.target.value })}
-                    style={{ width: "100%" }}
-                  >
-                    <option value="">— Назначить позже —</option>
-                    {allUsers.filter(u => u.is_active && u.role === productRole).map(u => (
-                      <option key={u.id} value={String(u.id)}>{u.full_name || u.username}</option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: 8 }}>
-                  Задайте этапы в рецептуре — тогда здесь появится выбор исполнителя
-                </div>
-              )}
-
-              {hasAssignment && (
-                <div style={{ fontSize: 12, color: "#10b981", padding: "6px 10px", background: "#10b98110", borderRadius: 6, marginTop: 8 }}>
-                  ✓ Исполнитель увидит заказ в «Мои заказы» и сам запустит его
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Конструктор маршрута */}
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4 }}>
-              Дополнительные этапы маршрута
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-              Этапы сверх рецептуры — ОТК, склад, упаковка и т.д. Можно задавать параллельные отделы.
-            </div>
-            <StagesBuilder
-              stages={extraStages}
-              onChange={setExtraStages}
-              stageTypes={stageTypes}
-              systemRoles={systemRoles}
-              availableComponents={allRecipes
-                .filter(r => r.product_name === form.product_name)
-                .map(r => r.component_name)
-                .filter((v, i, a) => a.indexOf(v) === i)
-                .sort()}
-            />
-          </div>
-
-          {/* Проверка компонентов */}
-          {demandRows.length > 0 && (
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>
-                Проверка компонентов
-              </div>
-              <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 8, background: hasShortage ? "#ef444415" : "#10b98115", border: `1px solid ${hasShortage ? "#ef444440" : "#10b98140"}`, fontSize: 13, fontWeight: 600, color: hasShortage ? "#ef4444" : "#10b981" }}>
-                {hasShortage ? "⚠ Не хватает компонентов — заказ будет создан в статусе «Ожидает компонентов»" : "✓ Компонентов достаточно"}
-              </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>{["Компонент","Нужно","На складе","Дефицит"].map(h => <th key={h} style={{ textAlign: "left", padding: "3px 8px", fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>{h}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {demandRows.map(r => {
-                      const ok = r.shortage === 0;
-                      return (
-                        <tr key={r.component_name} style={{ background: ok ? "" : "#ef444408" }}>
-                          <td style={{ padding: "4px 8px", fontSize: 13, fontWeight: 500 }}>{r.component_name}</td>
-                          <td style={{ padding: "4px 8px", fontSize: 13 }}>{r.required}</td>
-                          <td style={{ padding: "4px 8px", fontSize: 13, color: ok ? "#10b981" : "#f59e0b", fontWeight: 600 }}>{r.available}</td>
-                          <td style={{ padding: "4px 8px", fontSize: 13, fontWeight: 700, color: ok ? "#10b981" : "#ef4444" }}>{ok ? "—" : `−${r.shortage}`}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </div>
       </Modal>
 
@@ -1253,10 +955,23 @@ export default function OrdersPage() {
               <h2 style={{ margin: 0, fontSize: 18 }}>Заказ #{previewOrder.id}</h2>
               <button onClick={() => setPreviewOrder(null)} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "var(--text-muted)" }}>×</button>
             </div>
+            {/* Позиции заказа */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Позиции</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {(previewOrder.positions && previewOrder.positions.length > 0
+                  ? previewOrder.positions
+                  : [{ product_name: previewOrder.product_name, qty: previewOrder.planned_qty } as import("../../lib/api").OrderPosition]
+                ).map((p, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 14, padding: "6px 10px", borderRadius: 8, background: "var(--bg-secondary)" }}>
+                    <span style={{ fontWeight: 500 }}>{p.product_name || p.name}</span>
+                    <span style={{ color: "var(--text-secondary)" }}>{(p.qty ?? p.planned_qty) ?? "—"} шт</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 14 }}>
               {([
-                ["Изделие", previewOrder.product_name],
-                ["Количество", `${previewOrder.planned_qty} шт`],
                 ["Статус", <Badge key="s" status={previewOrder.status} />],
                 ["Приоритет", <PriorityBadge key="p" priority={previewOrder.priority} />],
                 ["Прогресс", previewOrder.stages_total ? `${previewOrder.stages_done}/${previewOrder.stages_total} этапов` : "—"],

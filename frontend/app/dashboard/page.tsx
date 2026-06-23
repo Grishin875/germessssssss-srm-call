@@ -410,7 +410,12 @@ export default function DashboardPage() {
                       <span style={{ fontSize: 11, fontFamily: "monospace", padding: "2px 8px", borderRadius: 5, background: "var(--bg-tertiary)", color: "var(--text-muted)" }}>
                         #{o.id}
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{o.product_name}</span>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
+                        {o.product_name}
+                        {(o.positions_count ?? 0) > 1 && (
+                          <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> +{(o.positions_count ?? 1) - 1}</span>
+                        )}
+                      </span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                       <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
@@ -578,7 +583,7 @@ export default function DashboardPage() {
                     Заказы возвращены с ОТК на доработку ({reworkOrders.length})
                   </div>
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-                    {reworkOrders.map((o) => `#${o.id} ${o.product_name}`).join(" · ")}
+                    {reworkOrders.map((o) => `#${o.id} ${o.product_name}${(o.positions_count ?? 0) > 1 ? ` +${(o.positions_count ?? 1) - 1}` : ""}`).join(" · ")}
                   </div>
                 </div>
               </div>
@@ -642,7 +647,12 @@ export default function DashboardPage() {
                           <span style={{ fontSize: 11, fontFamily: "monospace", padding: "2px 8px", borderRadius: 5, background: "var(--bg-tertiary)", color: "var(--text-muted)" }}>
                             #{o.id}
                           </span>
-                          <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{o.product_name}</span>
+                          <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
+                            {o.product_name}
+                            {(o.positions_count ?? 0) > 1 && (
+                              <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> +{(o.positions_count ?? 1) - 1}</span>
+                            )}
+                          </span>
                           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{o.planned_qty} шт</span>
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS is_firmware_done INTEGER DEFAULT 0"))
         await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_qty INTEGER DEFAULT 0"))
         await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(100)"))
+        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
         # Колонки журнала ремонтов СЦ (таблица могла быть создана старой версией без них)
         await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS operator_id VARCHAR(50)"))
         await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS repaired_qty INTEGER DEFAULT 0"))

@@ -38,16 +38,44 @@ async def upsert_mapping(db: AsyncSession, onec_code: str, onec_name: str, crm_p
     await db.execute(stmt)
 
 
-async def create_crm_order(db: AsyncSession, product_name: str, planned_qty: int,
+async def create_crm_order(db: AsyncSession, positions: "list[dict]",
                             deadline: Optional[str], comment: Optional[str]) -> int:
-    """Создаёт заказ в CRM и возвращает его ID."""
+    """Создаёт заказ в CRM (шапка + N позиций) и возвращает его ID.
+
+    positions — список словарей {product_name, qty}. Шапка заказа получает
+    product_name = имя первой позиции, planned_qty = сумма qty по всем позициям
+    (для обратной совместимости отображения). Для каждой позиции создаётся
+    строка order_items. Эти заказы из вебхуков НЕ генерируют этапы/партии/резерв —
+    только шапка + позиции.
+    """
     from sqlalchemy import text
-    row = (await db.execute(text("""
+
+    norm_positions = []
+    for p in positions:
+        pn = (p.get("product_name") or "").strip()
+        qty = int(p.get("qty") or 0)
+        if not pn or qty <= 0:
+            continue
+        norm_positions.append({"product_name": pn, "qty": qty})
+    if not norm_positions:
+        raise ValueError("Нет валидных позиций для создания заказа")
+
+    header_name = norm_positions[0]["product_name"]
+    total_qty = sum(p["qty"] for p in norm_positions)
+
+    order_id = (await db.execute(text("""
         INSERT INTO orders (product_name, planned_qty, status, priority, deadline, comment)
         VALUES (:pn, :qty, 'Создан', 'Обычный', :dl, :cm)
         RETURNING id
-    """), {"pn": product_name, "qty": planned_qty, "dl": deadline, "cm": comment})).scalar_one()
-    return row
+    """), {"pn": header_name, "qty": total_qty, "dl": deadline, "cm": comment})).scalar_one()
+
+    for i, p in enumerate(norm_positions):
+        await db.execute(text("""
+            INSERT INTO order_items (order_id, product_name, planned_qty, actual_qty, status, sort_order)
+            VALUES (:oid, :pn, :qty, 0, 'Создан', :so)
+        """), {"oid": order_id, "pn": p["product_name"], "qty": p["qty"], "so": i})
+
+    return order_id
 
 
 async def register_integration_order(db: AsyncSession, source: str, external_id: str,

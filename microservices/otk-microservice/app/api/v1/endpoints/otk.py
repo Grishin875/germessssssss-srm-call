@@ -235,7 +235,8 @@ async def otk_check(body: OtkCheckRequest, request: Request):
             production_type=batch.production_type, released_qty=defect_qty,
             good_qty=0, defect_qty=defect_qty, status="Передан в СЦ",
             maker_id=body.otkId, check_date=datetime.utcnow(),
-            order_id=batch.order_id, defect_comment=body.defect_comment,
+            order_id=batch.order_id, order_item_id=batch.order_item_id,
+            defect_comment=body.defect_comment,
             source_batch_id=batch.source_batch_id or body.batchId,
             receive_date=datetime.utcnow(),
         )
@@ -243,8 +244,15 @@ async def otk_check(body: OtkCheckRequest, request: Request):
 
     if batch.order_id:
         is_defect = body.result == 3 or (body.result == 2 and defect_qty > 0)
+        # Позиция (line item) бракованной партии. Если задана — доработку скоупим
+        # только на эту позицию; иначе (legacy) работаем по всему заказу.
+        item_id = batch.order_item_id
+        # Фрагмент WHERE и параметры для скоупа по позиции (или весь заказ при legacy)
+        item_clause = " AND order_item_id=:iid" if item_id is not None else ""
+        item_params = {"iid": item_id} if item_id is not None else {}
         if is_defect:
-            # Возвращаем заказ на доработку
+            # Возвращаем заказ на доработку (статус заказа — общий, по order_id;
+            # статус-машина ниже переагрегирует с учётом всех позиций)
             comment_text = body.defect_comment or ""
             if body.result == 2:
                 comment_text = f"Частичный брак: {defect_qty} шт. {comment_text}"
@@ -264,44 +272,46 @@ async def otk_check(body: OtkCheckRequest, request: Request):
                     f"{batch.product_name}: систематический брак. Требуется вмешательство руководителя.",
                     link=f"/orders/{batch.order_id}", type_="warning")
 
-            await db.execute(text("""
+            await db.execute(text(f"""
                 UPDATE production_batches SET status='Запланировано', updated_at=NOW()
-                WHERE order_id=:oid AND status='Готов к проверке ОТК'
-            """), {"oid": batch.order_id})
+                WHERE order_id=:oid AND status='Готов к проверке ОТК'{item_clause}
+            """), {"oid": batch.order_id, **item_params})
 
             # Возврат на доработку: реактивируем последний завершённый
             # ПРОИЗВОДСТВЕННЫЙ этап перед ОТК. next_stage_id ОТК-этапа указывает
             # вперёд по маршруту (склад/отгрузка) — реактивировать его нельзя,
             # иначе брак уходит дальше вместо возврата исполнителю.
-            otk_stage = (await db.execute(text("""
+            # Все выборки этапов скоупим на позицию (order_item_id), если она известна.
+            otk_stage = (await db.execute(text(f"""
                 SELECT id, sort_order FROM order_stages
-                WHERE order_id=:oid AND stage_type='otk' AND status='done'
+                WHERE order_id=:oid AND stage_type='otk' AND status='done'{item_clause}
                 ORDER BY completed_at DESC LIMIT 1
-            """), {"oid": batch.order_id})).mappings().one_or_none()
+            """), {"oid": batch.order_id, **item_params})).mappings().one_or_none()
 
             rework_stage_id = None
             # 1) Явный id этапа от ОТК
             if body.rework_stage_id:
-                rework_stage_id = (await db.execute(text("""
+                rework_stage_id = (await db.execute(text(f"""
                     SELECT id FROM order_stages
-                    WHERE id=:sid AND order_id=:oid AND stage_type != 'otk'
-                """), {"sid": body.rework_stage_id, "oid": batch.order_id})).scalar_one_or_none()
+                    WHERE id=:sid AND order_id=:oid AND stage_type != 'otk'{item_clause}
+                """), {"sid": body.rework_stage_id, "oid": batch.order_id, **item_params})).scalar_one_or_none()
             # 2) Отдел (stage_type), указанный ОТК — берём последний завершённый этап этого типа
             if not rework_stage_id and body.rework_stage_type:
-                rework_stage_id = (await db.execute(text("""
+                rework_stage_id = (await db.execute(text(f"""
                     SELECT id FROM order_stages
-                    WHERE order_id=:oid AND stage_type=:st AND status='done'
+                    WHERE order_id=:oid AND stage_type=:st AND status='done'{item_clause}
                     ORDER BY completed_at DESC LIMIT 1
-                """), {"oid": batch.order_id, "st": body.rework_stage_type})).scalar_one_or_none()
+                """), {"oid": batch.order_id, "st": body.rework_stage_type, **item_params})).scalar_one_or_none()
             # 3) Авто-выбор: последний завершённый производственный этап перед ОТК
             if not rework_stage_id:
-                rework_stage_id = (await db.execute(text("""
+                rework_stage_id = (await db.execute(text(f"""
                     SELECT id FROM order_stages
-                    WHERE order_id=:oid AND stage_type != 'otk' AND status='done'
+                    WHERE order_id=:oid AND stage_type != 'otk' AND status='done'{item_clause}
                       AND (CAST(:max_sort AS INTEGER) IS NULL OR sort_order <= :max_sort)
                     ORDER BY completed_at DESC LIMIT 1
                 """), {"oid": batch.order_id,
-                       "max_sort": otk_stage["sort_order"] if otk_stage else None}
+                       "max_sort": otk_stage["sort_order"] if otk_stage else None,
+                       **item_params}
                 )).scalar_one_or_none()
 
             if rework_stage_id:
@@ -323,6 +333,10 @@ async def otk_check(body: OtkCheckRequest, request: Request):
                     SET status='blocked', started_at=NULL, completed_at=NULL, updated_at=NOW()
                     WHERE id=:sid
                 """), {"sid": otk_stage["id"]})
+            # Переагрегируем статус заказа по всем позициям: для одной бракованной
+            # позиции мы выставили 'Доработка', но статус-машина учитывает остальные.
+            from app.services.order_status import auto_update_order_status
+            await auto_update_order_status(db, batch.order_id)
         else:
             from app.services.order_status import auto_update_order_status
             await auto_update_order_status(db, batch.order_id)
@@ -366,8 +380,15 @@ async def otk_check(body: OtkCheckRequest, request: Request):
 async def ready_to_ship(request: Request):
     _perm(request, "otk.view")
     db = _db(request)
+    # Группируем по (order_id, order_item_id): каждая позиция заказа — отдельная строка.
+    # Legacy-партии (order_item_id IS NULL) дают одну строку с item_id=NULL и берут
+    # имя/кол-во из шапки заказа.
     rows = (await db.execute(text("""
-        SELECT o.id, o.product_name, o.planned_qty, o.status,
+        SELECT o.id,
+               otk.order_item_id AS order_item_id,
+               COALESCE(oi.product_name, o.product_name) AS product_name,
+               COALESCE(oi.planned_qty, o.planned_qty) AS planned_qty,
+               o.status,
                json_agg(json_build_object(
                  'batch_id', otk.batch_id, 'good_qty', otk.good_qty,
                  'shipped_qty', COALESCE(otk.shipped_qty,0),
@@ -376,12 +397,17 @@ async def ready_to_ship(request: Request):
                )) as batches
         FROM orders o
         JOIN otk_batches otk ON otk.order_id = o.id
+        LEFT JOIN order_items oi ON oi.id = otk.order_item_id
         WHERE otk.status = 'готово к отгрузке'
           AND NOT EXISTS (
               SELECT 1 FROM otk_batches b
-              WHERE b.order_id = o.id AND b.status = 'брак'
+              WHERE b.order_id = o.id
+                AND b.status = 'брак'
+                AND b.order_item_id IS NOT DISTINCT FROM otk.order_item_id
           )
-        GROUP BY o.id ORDER BY o.created_at DESC
+        GROUP BY o.id, otk.order_item_id, oi.product_name, oi.planned_qty,
+                 o.product_name, o.planned_qty, o.status, o.created_at
+        ORDER BY o.created_at DESC, otk.order_item_id
     """))).mappings().all()
     return list(rows)
 

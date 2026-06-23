@@ -110,7 +110,12 @@ export function KanbanBoard({
                       <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>#{o.id}</span>
                       <PriorityBadge priority={o.priority} />
                     </div>
-                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, lineHeight: 1.3 }}>{o.product_name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, lineHeight: 1.3 }}>
+                      {o.product_name}
+                      {(o.positions_count ?? 0) > 1 && (
+                        <span style={{ fontWeight: 500, color: "var(--text-muted)" }}> +{(o.positions_count ?? 1) - 1}</span>
+                      )}
+                    </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "var(--text-muted)" }}>
                       <span>{o.planned_qty} шт</span>
                       {o.deadline && (

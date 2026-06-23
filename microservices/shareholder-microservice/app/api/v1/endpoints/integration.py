@@ -62,24 +62,33 @@ async def onec_order_webhook(request: Request, x_signature: Optional[str] = Head
     if existing:
         return {"success": True, "crm_order_id": existing, "message": "Заказ уже существует"}
 
-    created_orders = []
+    # Заказ из 1С с N позициями → ОДИН заказ CRM с N позициями (order_items).
+    comment_parts = []
+    if data.client_name: comment_parts.append(f"Клиент: {data.client_name}")
+    if data.order_number: comment_parts.append(f"Заказ 1С: {data.order_number}")
+    if data.comment: comment_parts.append(data.comment)
+
+    positions = []
     for item in data.items:
         product_name = await resolve_product_name(db, item.nomenclature_code, item.nomenclature_name)
-        comment_parts = []
-        if data.client_name: comment_parts.append(f"Клиент: {data.client_name}")
-        if data.order_number: comment_parts.append(f"Заказ 1С: {data.order_number}")
-        if data.comment: comment_parts.append(data.comment)
+        positions.append({"product_name": product_name, "qty": item.quantity})
 
-        crm_id = await create_crm_order(
-            db, product_name, item.quantity,
-            data.deadline, " | ".join(comment_parts) or None
-        )
-        ext_id = f"{data.external_id}_{item.nomenclature_code}"
-        await register_integration_order(db, "onec", ext_id, crm_id, data.model_dump())
-        created_orders.append({"crm_order_id": crm_id, "product_name": product_name, "qty": item.quantity})
+    if not positions:
+        raise HTTPException(400, "Заказ из 1С не содержит позиций")
+
+    crm_id = await create_crm_order(
+        db, positions, data.deadline, " | ".join(comment_parts) or None
+    )
+    # ext_id мапим на сам заказ 1С (external_id); ранее на каждую позицию заводился
+    # отдельный заказ, теперь это один заказ.
+    await register_integration_order(db, "onec", data.external_id, crm_id, data.model_dump())
 
     await db.commit()
-    return {"success": True, "created_orders": created_orders}
+    return {
+        "success": True,
+        "crm_order_id": crm_id,
+        "positions": positions,
+    }
 
 
 @router.post("/integration/onec/stock")
@@ -142,8 +151,9 @@ async def bitrix_deal_webhook(request: Request, x_signature: Optional[str] = Hea
     if data.responsible_name: comment_parts.append(f"Ответственный: {data.responsible_name}")
     if data.comment: comment_parts.append(data.comment)
 
+    # Битрикс остаётся одной позицией (один order_items).
     crm_id = await create_crm_order(
-        db, product_name, data.quantity or 1,
+        db, [{"product_name": product_name, "qty": data.quantity or 1}],
         data.deadline, " | ".join(comment_parts)
     )
     await register_integration_order(db, "bitrix", data.deal_id, crm_id, data.model_dump())

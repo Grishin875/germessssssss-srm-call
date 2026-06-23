@@ -40,8 +40,16 @@ class ShipPartialRequest(BaseModel):
 async def ready_to_ship(request: Request):
     _perm(request, "otk.view")
     db = _db(request)
+    # Группируем по (order_id, order_item_id) — каждая позиция заказа отдельной строкой.
+    # Legacy-партии (order_item_id IS NULL) дают строку с item_id=NULL и берут
+    # имя/кол-во из шапки заказа.
     rows = (await db.execute(text("""
-        SELECT o.id, o.product_name, o.planned_qty, o.actual_qty, o.status,
+        SELECT o.id,
+               otk.order_item_id AS order_item_id,
+               COALESCE(oi.product_name, o.product_name) AS product_name,
+               COALESCE(oi.planned_qty, o.planned_qty) AS planned_qty,
+               COALESCE(oi.actual_qty, o.actual_qty) AS actual_qty,
+               o.status,
                json_agg(json_build_object(
                    'batch_id', otk.batch_id,
                    'product_name', otk.product_name,
@@ -53,10 +61,12 @@ async def ready_to_ship(request: Request):
                ) ORDER BY otk.check_date DESC) as batches
         FROM orders o
         JOIN otk_batches otk ON otk.order_id = o.id
+        LEFT JOIN order_items oi ON oi.id = otk.order_item_id
         WHERE otk.status = 'готово к отгрузке'
            OR (otk.status = 'отгружено' AND COALESCE(otk.shipped_qty, 0) < otk.good_qty)
-        GROUP BY o.id
-        ORDER BY o.created_at DESC
+        GROUP BY o.id, otk.order_item_id, oi.product_name, oi.planned_qty, oi.actual_qty,
+                 o.product_name, o.planned_qty, o.actual_qty, o.status, o.created_at
+        ORDER BY o.created_at DESC, otk.order_item_id
     """))).mappings().all()
 
     result = []

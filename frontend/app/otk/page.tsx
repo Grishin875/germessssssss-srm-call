@@ -244,7 +244,12 @@ export default function OtkPage() {
                         {/* Title */}
                         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
                           <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>#{order.id}</span>
-                          <span style={{ fontWeight: 700, fontSize: 16 }}>{order.product_name}</span>
+                          <span style={{ fontWeight: 700, fontSize: 16 }}>
+                            {order.product_name}
+                            {(order.positions_count ?? 0) > 1 && (
+                              <span style={{ fontWeight: 500, fontSize: 14, color: "var(--text-muted)" }}> +{(order.positions_count ?? 1) - 1}</span>
+                            )}
+                          </span>
                           <PriorityBadge priority={order.priority} />
                           <Badge status={order.status} />
                         </div>

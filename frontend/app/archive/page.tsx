@@ -95,7 +95,12 @@ export default function ArchivePage() {
                     {visible.map((order) => (
                       <tr key={order.id} className="border-b border-gray-50 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
                         <td className="py-3 px-3 font-mono text-xs text-gray-500">{order.id}</td>
-                        <td className="py-3 px-3 font-medium text-gray-900 dark:text-gray-100">{order.product_name}</td>
+                        <td className="py-3 px-3 font-medium text-gray-900 dark:text-gray-100">
+                          {order.product_name}
+                          {(order.positions_count ?? 0) > 1 && (
+                            <span className="font-normal text-gray-400"> +{(order.positions_count ?? 1) - 1}</span>
+                          )}
+                        </td>
                         <td className="py-3 px-3 text-gray-600 dark:text-gray-300">{order.planned_qty}</td>
                         <td className="py-3 px-3 text-gray-600 dark:text-gray-300">{order.actual_qty ?? "—"}</td>
                         <td className="py-3 px-3"><Badge status={order.status} /></td>

@@ -26,6 +26,7 @@ class OtkBatch(Base):
     rejection_photo_url = Column(String(500))   # фото брака от ОТК
     source_batch_id = Column(String(100))
     order_id = Column(Integer)
+    order_item_id = Column(Integer)   # позиция заказа (мультипозиционные заказы); без FK (кросс-сервис)
     is_firmware_done = Column(Boolean, default=False)
     firmware_qty = Column(Integer)
     firmware_version = Column(String(100))

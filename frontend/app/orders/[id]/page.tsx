@@ -205,13 +205,26 @@ export default function OrderDetailPage() {
     if (!order) return [];
     const stockMap: Record<string, number> = {};
     allComponents.forEach(c => { stockMap[c.name] = c.stock ?? 0; });
-    const recipes = allRecipes.filter(r => r.product_name === order.product_name);
-    return recipes.map(r => {
-      const needed = Math.ceil(r.norm * order.planned_qty);
-      const warehouseName = r.warehouse_component_name || r.component_name;
-      const available = stockMap[warehouseName] ?? stockMap[r.component_name] ?? 0;
-      const after = available - needed;
-      return { name: r.component_name, production_type: r.production_type, needed, available, after, ok: after >= 0 };
+    // Позиции заказа: суммируем потребность по всем позициям. Legacy/без позиций — одна виртуальная позиция.
+    const orderPositions = (order.positions && order.positions.length > 0)
+      ? order.positions.map(p => ({ name: p.product_name || p.name || "", qty: Number(p.qty ?? p.planned_qty) || 0 }))
+      : [{ name: order.product_name, qty: order.planned_qty }];
+    // Аккумулируем потребность по компонентам через все позиции
+    const acc: Record<string, { name: string; production_type: string; warehouseName: string; needed: number }> = {};
+    for (const pos of orderPositions) {
+      if (!pos.name) continue;
+      const recipes = allRecipes.filter(r => r.product_name === pos.name);
+      for (const r of recipes) {
+        const needed = Math.ceil(r.norm * pos.qty);
+        const key = r.component_name;
+        if (!acc[key]) acc[key] = { name: r.component_name, production_type: r.production_type, warehouseName: r.warehouse_component_name || r.component_name, needed: 0 };
+        acc[key].needed += needed;
+      }
+    }
+    return Object.values(acc).map(a => {
+      const available = stockMap[a.warehouseName] ?? stockMap[a.name] ?? 0;
+      const after = available - a.needed;
+      return { name: a.name, production_type: a.production_type, needed: a.needed, available, after, ok: after >= 0 };
     });
   }, [order, allRecipes, allComponents]);
 
@@ -534,7 +547,13 @@ export default function OrderDetailPage() {
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <Button variant="ghost" size="sm" onClick={() => router.back()}>← Назад</Button>
-          <h1 style={{ margin: 0 }}>{order.product_name}</h1>
+          <h1 style={{ margin: 0 }}>Заказ №{order.id}</h1>
+          <span style={{ fontSize: 15, color: "var(--text-secondary)", fontWeight: 500 }}>
+            {order.product_name}
+            {(order.positions_count ?? 0) > 1 && (
+              <span style={{ marginLeft: 6, fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>+{(order.positions_count ?? 1) - 1}</span>
+            )}
+          </span>
           <Badge status={order.status} />
           {order.priority && <PriorityBadge priority={order.priority} />}
           {!!order.otk_attempts && order.otk_attempts > 0 && (
@@ -623,9 +642,6 @@ export default function OrderDetailPage() {
               <dl style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 14 }}>
                 {([
                   ["ID", `#${order.id}`],
-                  ["Изделие", order.product_name],
-                  ["Количество", `${order.planned_qty} шт`],
-                  ["Фактически", `${order.actual_qty ?? 0} шт`],
                   ["Приоритет", <PriorityBadge key="p" priority={order.priority} />],
                   ["Срок", order.deadline ? new Date(order.deadline).toLocaleDateString("ru") : "—"],
                   ["Дата получения", order.received_date ? new Date(order.received_date).toLocaleDateString("ru") : "—"],
@@ -654,7 +670,7 @@ export default function OrderDetailPage() {
             </Card>
 
             {order.positions && order.positions.length > 0 && (
-              <Card title="Комплектация (позиции)">
+              <Card title="Позиции заказа">
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", fontSize: 14 }}>
                     <thead>
@@ -662,14 +678,20 @@ export default function OrderDetailPage() {
                         <th style={{ textAlign: "left", width: 40 }}>№</th>
                         <th style={{ textAlign: "left" }}>Наименование</th>
                         <th style={{ textAlign: "right", width: 90 }}>Кол-во</th>
+                        <th style={{ textAlign: "left", width: 120 }}>Статус</th>
+                        <th style={{ textAlign: "right", width: 90 }}>Прогресс</th>
                       </tr>
                     </thead>
                     <tbody>
                       {order.positions.map((p, i) => (
-                        <tr key={i}>
+                        <tr key={p.id ?? i}>
                           <td>{i + 1}</td>
-                          <td>{p.name}</td>
-                          <td style={{ textAlign: "right" }}>{p.qty ?? "—"}</td>
+                          <td style={{ fontWeight: 500 }}>{p.product_name || p.name}</td>
+                          <td style={{ textAlign: "right" }}>{(p.qty ?? p.planned_qty) ?? "—"}</td>
+                          <td>{p.status ? <Badge status={p.status} /> : <span style={{ color: "var(--text-muted)" }}>—</span>}</td>
+                          <td style={{ textAlign: "right", color: "var(--text-secondary)" }}>
+                            {p.stages_total ? `${p.stages_done ?? 0}/${p.stages_total}` : "—"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -779,7 +801,30 @@ export default function OrderDetailPage() {
                 </div>
               </Card>
             ) : (
-              stages.map((stage, idx) => {
+              // Группировка этапов по позиции заказа (order_item_id). null → общая группа.
+              (() => {
+                const groupOrder: (number | null)[] = [];
+                const grouped = new Map<number | null, OrderStage[]>();
+                for (const st of stages) {
+                  const key = st.order_item_id ?? null;
+                  if (!grouped.has(key)) { grouped.set(key, []); groupOrder.push(key); }
+                  grouped.get(key)!.push(st);
+                }
+                const multiGroup = groupOrder.length > 1 || (groupOrder.length === 1 && groupOrder[0] !== null);
+                return groupOrder.map(groupKey => {
+                  const groupStages = grouped.get(groupKey)!;
+                  const pos = groupKey != null ? order.positions?.find(p => p.id === groupKey) : null;
+                  const groupTitle = pos ? (pos.product_name || pos.name) : (groupKey == null ? "Общие этапы" : `Позиция #${groupKey}`);
+                  return (
+                    <div key={groupKey ?? "default"} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                      {multiGroup && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                          <span style={{ fontWeight: 700, fontSize: 15 }}>{groupTitle}</span>
+                          {pos?.qty != null && <span style={{ fontSize: 13, color: "var(--text-muted)" }}>· {pos.qty} шт</span>}
+                          <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                        </div>
+                      )}
+                      {groupStages.map((stage, idx) => {
                 const typeInfo = STAGE_TYPE_LABELS[stage.stage_type] ?? { label: stage.stage_type, color: "#6b7280" };
                 const isActive = stage.status === "in_progress" || stage.status === "pending";
                 const isMyStage = stage.assigned_to === String(user.id);
@@ -986,7 +1031,11 @@ export default function OrderDetailPage() {
                   </Card>
                   </div>
                 );
-              })
+                      })}
+                    </div>
+                  );
+                });
+              })()
             )}
           </div>
         )}

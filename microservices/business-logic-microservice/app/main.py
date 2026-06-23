@@ -7,7 +7,7 @@ from app.api.v1.endpoints.orders import router as orders_router
 from app.api.v1.endpoints.chat import router as chat_router
 from shared.core.database import make_engine, make_session_factory, Base
 from shared.core.security import decode_token
-from app.models.business import Order, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, ChatChannel, ChatChannelMember, ChatMessage  # noqa
+from app.models.business import Order, OrderItem, ProductionBatch, ProductionBatchOperator, ProductionDailyProgress, OrderStage, OrderComment, CustomFieldDefinition, CustomFieldValue, StageAssignee, ChatChannel, ChatChannelMember, ChatMessage  # noqa
 
 engine = make_engine(settings.DATABASE_URL)
 session_factory = make_session_factory(engine)
@@ -49,6 +49,14 @@ async def lifespan(app: FastAPI):
         # Резерв компонентов: «reserved» на складе (владелец — warehouse-сервис; дублируем
         # здесь идемпотентно, т.к. business-logic пишет в reserved при создании заказа).
         await conn.execute(text("ALTER TABLE warehouse_components ADD COLUMN IF NOT EXISTS reserved NUMERIC(15,3) DEFAULT 0"))
+        # Мультипозиционные заказы: позиция = order_item; этапы/партии/ОТК ссылаются на позицию.
+        # order_id сохраняется для обратной совместимости и существующих запросов.
+        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
+        await conn.execute(text("ALTER TABLE production_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
+        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_order_stages_item ON order_stages(order_item_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_production_batches_item ON production_batches(order_item_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_otk_batches_item ON otk_batches(order_item_id)"))
     yield
     await engine.dispose()
 

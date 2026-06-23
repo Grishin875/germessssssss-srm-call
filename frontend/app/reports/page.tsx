@@ -13,7 +13,7 @@ import { exportToExcel, Row as ExcelRow } from "../../lib/excel";
 // Доступные колонки отчёта по заказам
 const COLUMNS: { key: keyof Order; label: string; render?: (o: Order) => string | number }[] = [
   { key: "id", label: "ID" },
-  { key: "product_name", label: "Изделие" },
+  { key: "product_name", label: "Изделие", render: o => o.product_name + ((o.positions_count ?? 0) > 1 ? ` +${(o.positions_count ?? 1) - 1}` : "") },
   { key: "planned_qty", label: "План, шт" },
   { key: "actual_qty", label: "Факт, шт", render: o => o.actual_qty ?? 0 },
   { key: "status", label: "Статус" },

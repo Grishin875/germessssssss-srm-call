@@ -31,6 +31,25 @@ class Order(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class OrderItem(Base):
+    """Позиция заказа (line item). Заказ = шапка + список позиций.
+    Каждая позиция = изделие из каталога + кол-во, со своим производством/ОТК."""
+    __tablename__ = "order_items"
+
+    id           = Column(Integer, primary_key=True)
+    order_id     = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    product_name = Column(String(500), nullable=False)   # изделие из каталога/рецептур
+    planned_qty  = Column(Integer, nullable=False, default=0)
+    actual_qty   = Column(Integer, default=0)
+    status       = Column(String(100), default="Создан")  # своя статус-машина позиции
+    sort_order   = Column(Integer, default=0)
+    priority     = Column(String(50))                      # null = наследует приоритет заказа
+    comment      = Column(Text)
+    skipped_stage_ids = Column(Text)                       # JSON: пропуски этапов рецептуры этой позиции
+    created_at   = Column(DateTime, server_default=func.now())
+    updated_at   = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class ProductionBatch(Base):
     __tablename__ = "production_batches"
 
@@ -42,6 +61,7 @@ class ProductionBatch(Base):
     operator_id = Column(String(50))
     status = Column(String(100), default="Запланировано")
     order_id = Column(Integer, ForeignKey("orders.id"))
+    order_item_id = Column(Integer, ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True)
     comment = Column(Text)
     line_number = Column(String(50))
     mounting_operator_number = Column(String(50))
@@ -135,6 +155,7 @@ class OrderStage(Base):
 
     id            = Column(Integer, primary_key=True)
     order_id      = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    order_item_id = Column(Integer, ForeignKey("order_items.id", ondelete="CASCADE"), nullable=True)
     stage_type    = Column(String(50), nullable=False)
     stage_name    = Column(String(200))
     status        = Column(String(50), default="pending")

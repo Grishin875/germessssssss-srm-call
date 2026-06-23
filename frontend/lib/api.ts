@@ -1066,15 +1066,26 @@ export interface OrdersAnalytics {
 }
 
 export interface OrderPosition {
-  name: string;          // наименование позиции
-  qty?: number | null;   // количество
+  id?: number | null;          // id позиции (order_items.id); null = legacy виртуальная позиция
+  product_name: string;        // изделие из каталога
+  name?: string;               // legacy-алиас наименования
+  qty?: number | null;         // количество
+  planned_qty?: number | null;
+  actual_qty?: number | null;
+  status?: string;             // статус позиции
+  sort_order?: number;
+  stages_total?: number;
+  stages_done?: number;
+  stages?: OrderStage[];       // этапы позиции (в детальном ответе get_order)
+  legacy?: boolean;
 }
 
 export interface Order {
   id: number;
   product_name: string;
   planned_qty: number;
-  positions?: OrderPosition[];   // комплектация — список позиций (для Excel)
+  positions?: OrderPosition[];   // позиции заказа (изделие + кол-во + своё производство)
+  positions_count?: number;
   received_date?: string;        // дата получения
   shipment_date?: string;        // дата отправки
   actual_qty?: number;
@@ -1195,6 +1206,7 @@ export interface RecipeCase {
 export interface OrderStage {
   id: number;
   order_id: number;
+  order_item_id?: number | null;   // позиция заказа, к которой относится этап
   stage_type: string;
   stage_name?: string;
   status: string;

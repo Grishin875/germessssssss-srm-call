@@ -88,7 +88,7 @@ export function CalendarView({ orders, onOpen }: { orders: Order[]; onOpen: (id:
                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                     }}
                   >
-                    {overdue && "⚠ "}{o.product_name}
+                    {overdue && "⚠ "}{o.product_name}{(o.positions_count ?? 0) > 1 ? ` +${(o.positions_count ?? 1) - 1}` : ""}
                   </button>
                 );
               })}
