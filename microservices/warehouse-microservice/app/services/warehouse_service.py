@@ -168,14 +168,20 @@ async def batch_operation(db: AsyncSession, data: BatchOperationRequest):
             comp = await _get_by_name(db, item.name)
             if not comp:
                 raise ValueError(f"Компонент не найден для списания: \"{item.name}\"")
-            current = _to_float(comp.stock)
-            if current < item.qty:
-                raise ValueError(f"Недостаточно остатка для \"{item.name}\". Доступно: {current}, запрошено: {item.qty}")
-            await db.execute(
-                update(WarehouseComponent)
-                .where(func.lower(WarehouseComponent.name) == _norm(item.name))
-                .values(stock=WarehouseComponent.stock - item.qty)
+            # Атомарное списание: гард stock >= qty внутри самого UPDATE,
+            # чтобы исключить гонку «прочитал-проверил-списал» и уход stock в минус.
+            res = await db.execute(
+                text(
+                    "UPDATE warehouse_components SET stock = COALESCE(stock,0) - :qty "
+                    "WHERE LOWER(TRIM(name)) = :n AND COALESCE(stock,0) >= :qty"
+                ),
+                {"qty": item.qty, "n": _norm(item.name)},
             )
+            if res.rowcount == 0:
+                raise ValueError(
+                    f"Недостаточно остатка для \"{item.name}\". "
+                    f"Доступно: {_to_float(comp.stock)}, запрошено: {item.qty}"
+                )
             if data.toProduction:
                 await _upsert_production_stock(db, item.name, item.qty, comp.category or item.category or "Разное", comp.block or "СМД")
         else:
@@ -383,32 +389,73 @@ async def check_availability(db: AsyncSession, items: List[dict]) -> dict:
 async def verify_reservations(db: AsyncSession, fix: bool = False) -> dict:
     """Проверка целостности складских остатков и резервов.
 
-    Инвариант: 0 <= reserved <= stock (и stock не отрицателен). Аномалии могут
-    возникнуть при ручном редактировании или гонке списаний/резервов.
+    Инвариант: 0 <= reserved <= stock (и stock не отрицателен).
 
-    fix=False — только отчёт об аномалиях.
-    fix=True  — reserved приводится к LEAST(GREATEST(reserved,0), stock),
-                отрицательный stock приводится к 0 (с логированием
-                корректирующей операции RECEIVE).
+    Чинятся ТОЛЬКО однозначные аномалии (даже при fix=True):
+      * stock  < 0          → 0 (логируется корректирующая RECEIVE);
+      * reserved < 0        → 0 (явный мусор, легитимной брони быть не может).
+
+    Случай reserved > stock НЕ обрезается молча — это может быть легитимная
+    бронь под активные заказы (ORDER-RESERVE без CONSUME/RETURN), и обрезка
+    убила бы реальный резерв. Такая аномалия только логируется и попадает в
+    отчёт с флагом needs_manual_review. Исключение: если по компоненту НЕТ ни
+    одной активной операции RESERVE (т.е. бронь явно «висит» без основания),
+    тогда reserved безопасно обрезается до stock.
     """
     rows = (await db.execute(select(WarehouseComponent))).scalars().all()
 
     anomalies = []
     corrected = 0
+    manual_review = 0
     for c in rows:
         stock = _to_float(c.stock)
         reserved = _to_float(c.reserved)
-        new_stock = max(0.0, stock)
-        # clamp: 0 <= reserved <= stock
-        new_reserved = min(max(reserved, 0.0), new_stock)
-        if abs(new_stock - stock) < 1e-9 and abs(new_reserved - reserved) < 1e-9:
+
+        new_stock = max(0.0, stock)          # stock < 0 → 0
+        new_reserved = reserved
+        needs_manual_review = False
+
+        if reserved < 0:
+            new_reserved = 0.0               # явный мусор
+        elif reserved > new_stock:
+            # Потенциально легитимная бронь — не режем молча.
+            has_active_reserve = (await db.execute(
+                select(Operation.id).where(
+                    Operation.operation_type == "RESERVE",
+                    func.lower(Operation.component_name) == _norm(c.name),
+                ).limit(1)
+            )).scalar_one_or_none() is not None
+            if has_active_reserve:
+                needs_manual_review = True    # оставляем reserved как есть
+            else:
+                new_reserved = new_stock      # брони нет — безопасно обрезаем
+
+        if (abs(new_stock - stock) < 1e-9
+                and abs(new_reserved - reserved) < 1e-9
+                and not needs_manual_review):
             continue
+
         entry = {
             "component_name": c.name,
             "stock": stock, "reserved": reserved,
             "new_stock": new_stock, "new_reserved": new_reserved,
+            "needs_manual_review": needs_manual_review,
             "fixed": False,
         }
+
+        if needs_manual_review:
+            # Только лог для ручного разбора, состояние не трогаем.
+            manual_review += 1
+            if fix:
+                await _log_op(
+                    db, "RESERVE", c.name, reserved - new_stock,
+                    "АНОМАЛИЯ verify-reservations: reserved > stock при активной броне, "
+                    "требуется ручной разбор (не обрезаем)",
+                    op_id=_op_id("VERIFY-RESERVE-ANOMALY"),
+                )
+            anomalies.append(entry)
+            continue
+
         if fix:
             await db.execute(
                 update(WarehouseComponent)
@@ -425,18 +472,20 @@ async def verify_reservations(db: AsyncSession, fix: bool = False) -> dict:
             corrected += 1
         anomalies.append(entry)
 
-    if fix and corrected:
+    if fix and (corrected or manual_review):
         await db.commit()
 
     return {
         "success": True,
         "message": (
-            f"Исправлено аномалий резерва/остатка: {corrected}" if fix
-            else f"Найдено аномалий: {len(anomalies)}"
+            f"Исправлено аномалий: {corrected}, требует ручного разбора: {manual_review}"
+            if fix else
+            f"Найдено аномалий: {len(anomalies)} (из них на ручной разбор: {manual_review})"
         ),
         "checked": "reserved_within_stock",
         "anomalies_count": len(anomalies),
         "corrected_count": corrected,
+        "manual_review_count": manual_review,
         "corrections": anomalies,
     }
 
@@ -478,10 +527,13 @@ async def reconcile_stock(db: AsyncSession):
     )).all()
     sum_map = {name: _to_float(s) for name, s in sums}
 
-    main_rows = (await db.execute(
-        select(WarehouseStock).where(WarehouseStock.warehouse_id == main_id)
-    )).scalars().all()
-    main_by_name = {r.component_name: r for r in main_rows}
+    # Все строки складских остатков по компонентам — нужны, чтобы разносить
+    # недостачу (отрицательный diff) по складам с остатком, а не топить Основной в минус.
+    all_rows = (await db.execute(select(WarehouseStock))).scalars().all()
+    rows_by_name: dict = {}
+    for r in all_rows:
+        rows_by_name.setdefault(r.component_name, []).append(r)
+    main_by_name = {r.component_name: r for r in all_rows if r.warehouse_id == main_id}
 
     changed = False
     for name, stock in comps:
@@ -489,15 +541,57 @@ async def reconcile_stock(db: AsyncSession):
         diff = total - sum_map.get(name, 0.0)
         if abs(diff) < 1e-9:
             continue
-        row = main_by_name.get(name)
-        if row:
+
+        if diff > 0:
+            # Излишек относим на Основной склад (как и раньше).
+            row = main_by_name.get(name)
+            if row:
+                await db.execute(
+                    update(WarehouseStock).where(WarehouseStock.id == row.id)
+                    .values(quantity=_to_float(row.quantity) + diff)
+                )
+            else:
+                db.add(WarehouseStock(warehouse_id=main_id, component_name=name, quantity=diff))
+            changed = True
+            continue
+
+        # diff < 0: общий stock уменьшился — нужно списать недостачу со складов,
+        # не опуская ни одну строку ниже 0. Сначала с Основного, затем с остальных.
+        shortage = -diff
+        rows = rows_by_name.get(name, [])
+        rows_sorted = sorted(rows, key=lambda r: (r.warehouse_id != main_id, r.warehouse_id))
+        for r in rows_sorted:
+            if shortage <= 1e-9:
+                break
+            qty = _to_float(r.quantity)
+            if qty <= 0:
+                continue
+            take = min(qty, shortage)
             await db.execute(
-                update(WarehouseStock).where(WarehouseStock.id == row.id)
-                .values(quantity=_to_float(row.quantity) + diff)
+                update(WarehouseStock).where(WarehouseStock.id == r.id)
+                .values(quantity=func.greatest(qty - take, 0))
             )
-        else:
-            db.add(WarehouseStock(warehouse_id=main_id, component_name=name, quantity=diff))
-        changed = True
+            shortage -= take
+            changed = True
+
+        if shortage > 1e-9:
+            # Остатков по складам не хватило для покрытия недостачи —
+            # аномалия (рассинхрон). Логируем для ручного разбора; в минус не уходим.
+            main_row = main_by_name.get(name)
+            if main_row is None:
+                main_row = next(iter(rows_sorted), None)
+            if main_row is not None:
+                await db.execute(
+                    update(WarehouseStock).where(WarehouseStock.id == main_row.id)
+                    .values(quantity=func.greatest(WarehouseStock.quantity, 0))
+                )
+            await _log_op(
+                db, "WRITEOFF", name, shortage,
+                "АНОМАЛИЯ reconcile_stock: недостача превышает остатки по складам, "
+                "требуется ручной разбор (в минус не уводим)",
+                op_id=_op_id("RECONCILE-ANOMALY"),
+            )
+            changed = True
     if changed:
         await db.commit()
 
@@ -651,11 +745,33 @@ async def transfer_stock(db: AsyncSession, data: StockTransferRequest) -> dict:
             func.lower(WarehouseStock.component_name) == _norm(data.component_name),
         )
     )).scalar_one_or_none()
-    avail = (_to_float(src.quantity) - _to_float(src.reserved)) if src else 0.0
+
+    # Резерв учитывается на уровне компонента (warehouse_components.reserved),
+    # а WarehouseStock.reserved по складам сейчас всегда 0 — поэтому считать
+    # доступное как quantity - src.reserved нельзя (можно увести зарезервированное).
+    # Минимально-безопасный вариант: общий резерв компонента должен оставаться
+    # физически обеспеченным где-то на складах. На источнике обязаны остаться
+    # минимум те единицы резерва, которые не могут быть покрыты остальными складами:
+    #   reserve_to_hold_at_source = max(0, total_reserved - stock_on_other_warehouses)
+    # Перемещать можно не больше, чем quantity_src - reserve_to_hold_at_source.
+    comp = await _get_by_name(db, data.component_name)
+    total_reserved = _to_float(comp.reserved) if comp else 0.0
+
+    src_qty = _to_float(src.quantity) if src else 0.0
+    other_sum = (await db.execute(
+        select(func.coalesce(func.sum(WarehouseStock.quantity), 0)).where(
+            func.lower(WarehouseStock.component_name) == _norm(data.component_name),
+            WarehouseStock.warehouse_id != data.from_warehouse_id,
+        )
+    )).scalar_one()
+    other_sum = _to_float(other_sum)
+
+    reserve_to_hold_at_source = max(0.0, total_reserved - other_sum)
+    avail = max(0.0, src_qty - reserve_to_hold_at_source)
     if avail < data.quantity:
         raise ValueError(
-            f"Недостаточно '{data.component_name}' на складе «{src_w.name}»: "
-            f"доступно {avail}, запрошено {data.quantity}"
+            f"Недостаточно доступного '{data.component_name}' на складе «{src_w.name}» "
+            f"с учётом брони: доступно к переносу {avail}, запрошено {data.quantity}"
         )
 
     await db.execute(
@@ -872,15 +988,18 @@ async def create_purchase_request(db: AsyncSession, data: PurchaseRequestCreate,
 
 
 async def _receive_into_stock(db: AsyncSession, pr: PurchaseRequest):
-    """Оприходовать все позиции заявки на склад. Идемпотентно по operation_id PR-{id}-{idx}."""
+    """Оприходовать все позиции заявки на склад.
+    Идемпотентно по стабильному operation_id PR-{pr.id}-ITEM-{item.id}
+    (привязан к id позиции, а не к порядковому индексу — устойчив к изменению
+    состава/порядка позиций заявки)."""
     items = (await db.execute(
         select(PurchaseRequestItem).where(PurchaseRequestItem.request_id == pr.id).order_by(PurchaseRequestItem.id)
     )).scalars().all()
-    for idx, it in enumerate(items):
+    for it in items:
         qty = _to_float(it.quantity)
         if qty <= 0:
             continue
-        op_id = f"PR-{pr.id}-{idx}"
+        op_id = f"PR-{pr.id}-ITEM-{it.id}"
         exists = (await db.execute(
             select(Operation.id).where(Operation.operation_id == op_id)
         )).scalar_one_or_none()
@@ -1058,16 +1177,18 @@ async def issue_component_request(db: AsyncSession, req_id: int,
     if cr.status == "issued":
         raise ValueError("Заявка уже выдана")
     qty = _to_float(cr.qty)
-    # Атомарно списываем остаток со склада
+    # Атомарно списываем доступный остаток со склада с учётом брони:
+    # available = stock - reserved. Гард внутри UPDATE исключает уход available в минус.
     res = await db.execute(
         text(
-            "UPDATE warehouse_components SET stock = stock - :qty "
-            "WHERE LOWER(TRIM(name)) = :n AND stock >= :qty"
+            "UPDATE warehouse_components SET stock = COALESCE(stock,0) - :qty "
+            "WHERE LOWER(TRIM(name)) = :n "
+            "AND COALESCE(stock,0) - COALESCE(reserved,0) >= :qty"
         ),
         {"qty": qty, "n": _norm(cr.component_name)},
     )
     if res.rowcount == 0:
-        raise PermissionError("Недостаточно на складе")
+        raise PermissionError("Недостаточно доступного на складе (с учётом брони)")
     await _log_op(
         db, "WRITEOFF", cr.component_name, qty,
         f"Выдача по заявке #{cr.id} (причина: {cr.reason})",

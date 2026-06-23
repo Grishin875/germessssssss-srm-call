@@ -147,7 +147,32 @@ async def complete_repair(body: CompleteRepairRequest, request: Request):
         note += f", не подлежит ремонту {scrap} шт."
     new_comment = f"{batch.defect_comment} | {note}" if batch.defect_comment else note
 
-    # Возврат на повторную проверку ОТК: released_qty = отремонтированное количество
+    # Невосстановимый брак (scrap) учитываем ЯВНО, а не только в комментарии: пишем
+    # операцию списания брака в общий журнал operations (WRITEOFF). Без этого баланс
+    # «выпущено = годные + отгружено + списанный брак» не сходился — scrap «исчезал»
+    # из учёта при возврате партии на повторную проверку (released_qty=repaired).
+    # operation_id=SCRAP-{batch.id} уникален (PK партии) и идемпотентен по UNIQUE-
+    # столбцу operations.operation_id (ON CONFLICT DO NOTHING — на случай повторного
+    # вызова). operations — чужая таблица → text() с :named.
+    if scrap > 0:
+        await db.execute(text("""
+            INSERT INTO operations (operation_type, component_name, quantity, note,
+                                    operator_id, operation_id)
+            VALUES ('WRITEOFF', :cn, :q, :note, :op, :oid)
+            ON CONFLICT (operation_id) DO NOTHING
+        """), {
+            "cn": batch.product_name,
+            "q": scrap,
+            "note": f"Списание невосстановимого брака СЦ: партия {batch.batch_id}, "
+                    f"{scrap} шт. (брак {defect_total}, исправлено {repaired})",
+            "op": body.operatorId or str(u.id),
+            "oid": f"SCRAP-{batch.id}",
+        })
+
+    # Возврат на повторную проверку ОТК: released_qty = отремонтированное количество.
+    # scrap НЕ возвращается в released (он списан выше как WRITEOFF), поэтому
+    # баланс по партии сходится: исходный брак = repaired (на повторную проверку)
+    #                                          + scrap (списано WRITEOFF).
     await db.execute(
         update(OtkBatch)
         .where(OtkBatch.id == batch.id, OtkBatch.status == "Передан в СЦ")

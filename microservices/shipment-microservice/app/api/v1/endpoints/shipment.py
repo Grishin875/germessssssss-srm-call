@@ -96,6 +96,16 @@ async def ship_partial(body: ShipPartialRequest, request: Request):
         if batch["status"] != "готово к отгрузке":
             raise HTTPException(400, f"Партия {s.batchId} не готова к отгрузке (статус: {batch['status']})")
 
+        # Зеркалим поведение otk-сервиса: нельзя отгружать заказ, у которого есть брак —
+        # заказ на доработке, пока брак не переделают.
+        if batch["order_id"]:
+            has_brak = (await db.execute(
+                text("SELECT 1 FROM otk_batches WHERE order_id=:oid AND status='брак'"),
+                {"oid": batch["order_id"]},
+            )).scalar()
+            if has_brak:
+                raise HTTPException(400, "нельзя отгружать: есть брак, заказ на доработке")
+
         good = int(batch["good_qty"])
         already = int(batch["shipped_qty"] or 0)
         remaining = good - already

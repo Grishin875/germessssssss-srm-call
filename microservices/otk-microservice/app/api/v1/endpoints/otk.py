@@ -198,10 +198,20 @@ async def otk_check(body: OtkCheckRequest, request: Request):
         if good_qty + defect_qty != released:
             raise HTTPException(400, "Сумма годных и брака ≠ выпущенному количеству")
 
+    # При частичном браке (result=2, есть и годные, и брак) брак выносится в
+    # ОТДЕЛЬНУЮ SC-партию, а ИСХОДНАЯ партия несёт ТОЛЬКО годное. Иначе брак
+    # учитывался бы дважды (в исходной defect_qty И в SC defect_qty), а после
+    # ремонта — трижды. Поэтому при создании SC-партии у исходной обнуляем
+    # defect_qty и сводим released_qty к good_qty.
+    create_sc = body.result == 2 and good_qty > 0 and defect_qty > 0
+
     update_vals: dict = {
         "good_qty": good_qty, "defect_qty": defect_qty,
         "status": new_status, "check_date": func.now(), "maker_id": body.otkId,
     }
+    if create_sc:
+        update_vals["defect_qty"] = 0
+        update_vals["released_qty"] = good_qty
     if body.defect_comment:
         update_vals["defect_comment"] = body.defect_comment
     if body.rejection_photo_url:
@@ -211,19 +221,18 @@ async def otk_check(body: OtkCheckRequest, request: Request):
         update(OtkBatch).where(OtkBatch.batch_id == body.batchId).values(**update_vals)
     )
 
-    if body.result == 2 and body.records:
-        for rec in body.records:
-            if rec.quantity <= 0:
-                continue
-            dr = DefectRecordModel(
-                otk_batch_id=batch.id, defect_category_id=rec.category_id,
-                otk_defect_type_id=rec.defect_type_id, designator=rec.designator,
-                quantity=rec.quantity, comment=rec.comment,
-            )
-            db.add(dr)
-
+    # Единый путь учёта брака для result=2:
+    #  • good>0 и defect>0  → отдельная SC-партия несёт весь брак (create_sc),
+    #                         defect_records привязываются к НЕЙ;
+    #  • good==0 (всё брак) → исходная партия САМА становится SC-партией
+    #                         (status='Передан в СЦ', defect_qty=defect_qty),
+    #                         defect_records привязываются к ней.
+    # В обоих случаях defect_records живут на той партии, что несёт брак и
+    # имеет status='Передан в СЦ' — sc.py/sc_batches находит её по статусу,
+    # а отчёты суммируют defect_qty ровно один раз (на партии-носителе брака).
     sc_batch_id = None
-    if body.result == 2 and good_qty > 0 and defect_qty > 0:
+    defect_target_id = batch.id  # партия, к которой крепим defect_records
+    if create_sc:
         sc_batch_id = body.batchId + "-SC"
         sc_exists = (await db.execute(text(
             "SELECT 1 FROM otk_batches WHERE batch_id=:b"
@@ -241,6 +250,19 @@ async def otk_check(body: OtkCheckRequest, request: Request):
             receive_date=datetime.utcnow(),
         )
         db.add(sc)
+        await db.flush()  # получить sc.id, чтобы привязать defect_records к SC-партии
+        defect_target_id = sc.id
+
+    if body.result == 2 and body.records:
+        for rec in body.records:
+            if rec.quantity <= 0:
+                continue
+            dr = DefectRecordModel(
+                otk_batch_id=defect_target_id, defect_category_id=rec.category_id,
+                otk_defect_type_id=rec.defect_type_id, designator=rec.designator,
+                quantity=rec.quantity, comment=rec.comment,
+            )
+            db.add(dr)
 
     if batch.order_id:
         is_defect = body.result == 3 or (body.result == 2 and defect_qty > 0)

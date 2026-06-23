@@ -33,7 +33,9 @@ QC_GATES = {
 }
 
 # Этапы-склады, которые при завершении приходуют готовую продукцию.
-FINISHED_GOODS_STAGES = {"warehouse_fg", "warehouse"}
+# Только реальный склад готовой продукции "warehouse_fg". Generic-тип "warehouse"
+# убран: это промежуточный складской этап (склад СМД/РЭА), он НЕ должен приходовать ГП.
+FINISHED_GOODS_STAGES = {"warehouse_fg"}
 
 # Канонические типы этапов и их человекочитаемые названия.
 CANONICAL_STAGE_LABELS = {

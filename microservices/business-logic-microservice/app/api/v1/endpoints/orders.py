@@ -17,6 +17,10 @@ from app.services.canonical_route import (
     build_canonical_stages, QC_GATES, FINISHED_GOODS_STAGES, CANONICAL_STAGE_LABELS,
 )
 from shared.core.notify import notify_user, notify_roles, notify_managers
+from shared.core.order_status import (
+    consume_order_reserve as _shared_consume_order_reserve,
+    release_order_reserve as _shared_release_order_reserve,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -668,6 +672,57 @@ async def get_order(order_id: int, request: Request):
     return d
 
 
+async def _compute_order_demand(db, order) -> dict:
+    """Суммарная потребность заказа в компонентах — как в create_order.
+
+    Проходит по позициям заказа (order_items); если их нет (legacy-заказ) — считает
+    по шапке как один товар (order.product_name × order.planned_qty). Для каждой позиции
+    берёт рецепт (production_type != 'Сборка') и складывает норму × кол-во позиции по
+    каждому компоненту. Возвращает dict: {key: {"name": <складское имя>, "required": float}},
+    где key = LOWER(TRIM(складское имя)). Пустой dict, если рецептов нет."""
+    items = (await db.execute(
+        select(OrderItem.product_name, OrderItem.planned_qty)
+        .where(OrderItem.order_id == order.id)
+        .order_by(OrderItem.sort_order, OrderItem.id)
+    )).all()
+    if not items:
+        # legacy — заказ без позиций: считаем по шапке как один товар
+        items = [(order.product_name, int(order.planned_qty or 0))]
+
+    demand: dict = {}
+    for pname, pqty in items:
+        if not pname:
+            continue
+        rows = (await db.execute(text(
+            "SELECT component_name, norm, warehouse_component_name FROM recipes "
+            "WHERE LOWER(TRIM(product_name))=:pn AND production_type!='Сборка'"
+        ), {"pn": _norm(pname)})).mappings().all()
+        for r in rows:
+            wname = (r["warehouse_component_name"] or "").strip() or r["component_name"]
+            key = wname.strip().lower()
+            demand.setdefault(key, {"name": wname, "required": 0.0})
+            demand[key]["required"] += float(r["norm"]) * int(pqty or 0)
+    return demand
+
+
+async def _stage_qty_cap(db, stage, order_id: int):
+    """Потолок количества для этапа: если этап привязан к позиции (order_item_id) —
+    берём OrderItem.planned_qty этой позиции; иначе (legacy) — Order.planned_qty.
+    Возвращает (cap:int|None, label:str). cap=None означает «без ограничения» (нет данных)."""
+    if getattr(stage, "order_item_id", None) is not None:
+        item_qty = (await db.execute(
+            select(OrderItem.planned_qty).where(OrderItem.id == stage.order_item_id)
+        )).scalar_one_or_none()
+        if item_qty is not None:
+            return int(item_qty), "количество позиции"
+    order_qty = (await db.execute(
+        select(Order.planned_qty).where(Order.id == order_id)
+    )).scalar_one_or_none()
+    if order_qty is not None:
+        return int(order_qty), "количество заказа"
+    return None, "количество заказа"
+
+
 async def _generate_item_production(db, order_id: int, order_item_id: int,
                                     product_name: str, planned_qty: int, skipped_ids: set):
     """Авто-генерация этапов (из рецептуры изделия) и производственных партий для ОДНОЙ позиции.
@@ -916,85 +971,17 @@ async def close_order(order_id: int, request: Request):
 
 
 async def _return_reserved_components(db, order_id: int) -> int:
-    """Снять резерв компонентов под заказ (при отмене), если ещё не снимали и не списывали.
-    Идемпотентно: помечает снятие как ORDER-RETURN-{order_id}-*; пропускается, если резерв
-    уже превращён в списание (ORDER-CONSUME-*).
-    Поддержка legacy: для старых заказов резерв был сразу WRITEOFF (сток уже уменьшен) —
-    тогда возвращаем сток (+q); для новых (RESERVE) — просто снимаем бронь (reserved −q).
-    Возвращает число обработанных позиций."""
-    already = (await db.execute(text(
-        "SELECT 1 FROM operations WHERE operation_id LIKE :p OR operation_id LIKE :c LIMIT 1"
-    ), {"p": f"ORDER-RETURN-{order_id}-%", "c": f"ORDER-CONSUME-{order_id}-%"})).scalar_one_or_none()
-    if already:
-        return 0
-    reserved = (await db.execute(text("""
-        SELECT component_name, quantity, operation_type FROM operations
-        WHERE operation_id LIKE :p AND operation_type IN ('RESERVE', 'WRITEOFF')
-    """), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
-    returned = 0
-    for idx, r in enumerate(reserved):
-        if not r["quantity"]:
-            continue
-        if r["operation_type"] == "RESERVE":
-            # Новая модель: сток не трогали — снимаем только бронь
-            await db.execute(text(
-                "UPDATE warehouse_components SET reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
-                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
-            ), {"q": r["quantity"], "n": r["component_name"]})
-            note = f"Снятие резерва отменённого заказа #{order_id}"
-        else:
-            # Legacy: сток был уменьшен при создании — возвращаем на склад
-            await db.execute(text(
-                "UPDATE warehouse_components SET stock = COALESCE(stock,0) + :q "
-                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
-            ), {"q": r["quantity"], "n": r["component_name"]})
-            note = f"Возврат резерва отменённого заказа #{order_id}"
-        await db.execute(text("""
-            INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-            VALUES ('RESERVE_RELEASE', :cn, :q, :note, :oid)
-        """), {
-            "cn": r["component_name"], "q": r["quantity"],
-            "note": note, "oid": f"ORDER-RETURN-{order_id}-{idx}",
-        })
-        returned += 1
-    return returned
+    """Тонкая обёртка над shared.core.order_status.release_order_reserve —
+    единый источник правды для снятия/возврата резерва (идемпотентность чинится там).
+    Сохранена ради существующих вызовов в этом модуле; сигнатура не меняется."""
+    return await _shared_release_order_reserve(db, order_id)
 
 
 async def _consume_reserved_components(db, order_id: int) -> int:
-    """Превратить резерв компонентов заказа в фактическое списание (stock −q, reserved −q).
-    Вызывается при завершении/отгрузке заказа. Идемпотентно: помечает списания как
-    ORDER-CONSUME-{order_id}-*; пропускается, если резерв уже снят возвратом (ORDER-RETURN-*).
-    Обрабатывает только новые брони (operation_type='RESERVE'); у legacy-заказов сток уже
-    был списан при создании, поэтому их строки (WRITEOFF) пропускаются — повторного списания нет."""
-    already = (await db.execute(text(
-        "SELECT 1 FROM operations WHERE operation_id LIKE :c OR operation_id LIKE :r LIMIT 1"
-    ), {"c": f"ORDER-CONSUME-{order_id}-%", "r": f"ORDER-RETURN-{order_id}-%"})).scalar_one_or_none()
-    if already:
-        return 0
-    reserved = (await db.execute(text("""
-        SELECT component_name, quantity FROM operations
-        WHERE operation_id LIKE :p AND operation_type = 'RESERVE'
-    """), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
-    consumed = 0
-    for idx, r in enumerate(reserved):
-        if not r["quantity"]:
-            continue
-        await db.execute(text(
-            "UPDATE warehouse_components "
-            "SET stock = GREATEST(COALESCE(stock,0) - :q, 0), "
-            "    reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
-            "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
-        ), {"q": r["quantity"], "n": r["component_name"]})
-        await db.execute(text("""
-            INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-            VALUES ('WRITEOFF', :cn, :q, :note, :oid)
-        """), {
-            "cn": r["component_name"], "q": r["quantity"],
-            "note": f"Списание по завершении заказа #{order_id}",
-            "oid": f"ORDER-CONSUME-{order_id}-{idx}",
-        })
-        consumed += 1
-    return consumed
+    """Тонкая обёртка над shared.core.order_status.consume_order_reserve —
+    единый источник правды для превращения резерва в списание (идемпотентность чинится там).
+    Сохранена ради существующих вызовов в этом модуле; сигнатура не меняется."""
+    return await _shared_consume_order_reserve(db, order_id)
 
 
 @router.delete("/orders/{order_id}")
@@ -1045,17 +1032,9 @@ async def release_order_from_waiting(order_id: int, request: Request):
     if order.status != "Ожидает компонентов":
         raise HTTPException(400, f"Заказ не в статусе 'Ожидает компонентов' (текущий: {order.status})")
 
-    recipes_rows = (await db.execute(text("""
-        SELECT component_name, norm, warehouse_component_name
-        FROM recipes WHERE LOWER(TRIM(product_name))=LOWER(TRIM(:pn)) AND production_type!='Сборка'
-    """), {"pn": order.product_name})).mappings().all()
-
-    demand: dict = {}
-    for r in recipes_rows:
-        wname = (r["warehouse_component_name"] or "").strip() or r["component_name"]
-        key = wname.strip().lower()
-        demand.setdefault(key, {"name": wname, "required": 0.0})
-        demand[key]["required"] += float(r["norm"]) * order.planned_qty
+    # Потребность считаем суммарно по всем позициям заказа (как в create_order),
+    # а не по шапке (первое изделие × сумма кол-в) — иначе мультипозиция считается неверно.
+    demand = await _compute_order_demand(db, order)
 
     missing = []
     for key, d in demand.items():
@@ -1239,16 +1218,9 @@ async def component_demand(order_id: int, request: Request):
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Заказ не найден")
-    recipes = (await db.execute(text("""
-        SELECT component_name, norm, warehouse_component_name, production_type
-        FROM recipes WHERE LOWER(TRIM(product_name))=LOWER(TRIM(:pn)) AND production_type!='Сборка'
-    """), {"pn": order.product_name})).mappings().all()
-    demand: dict = {}
-    for r in recipes:
-        wname = (r["warehouse_component_name"] or "").strip() or r["component_name"]
-        key = _norm(wname)
-        demand.setdefault(key, {"component_name": wname, "required": 0})
-        demand[key]["required"] += float(r["norm"]) * order.planned_qty
+    # Потребность считаем суммарно по всем позициям заказа (как в create_order),
+    # а не по шапке (первое изделие × сумма кол-в) — иначе мультипозиция считается неверно.
+    demand = await _compute_order_demand(db, order)
     stock_rows = (await db.execute(text(
         "SELECT component_name, quantity FROM production_stock"
     ))).mappings().all()
@@ -1256,7 +1228,8 @@ async def component_demand(order_id: int, request: Request):
     components = []
     for key, d in demand.items():
         avail = stock.get(key, 0)
-        components.append({**d, "available": avail,
+        components.append({"component_name": d["name"], "required": d["required"],
+                           "available": avail,
                            "shortage": max(0, d["required"] - avail),
                            "canProduce": d["required"] <= avail})
     return {"canProduce": all(c["canProduce"] for c in components), "components": components}
@@ -1418,7 +1391,26 @@ async def pause_shift(body: PauseRequest, request: Request):
         raise HTTPException(404, "Партия не найдена")
     if batch.status != "Запущена":
         raise HTTPException(400, "Партия должна быть Запущена")
-    new_actual = int(batch.actual_qty or 0) + body.qtyProduced
+    # Единый источник выработки — production_daily_progress. Раньше pause_shift делал
+    # actual_qty += qtyProduced, а daily-progress ставил actual_qty = SUM(дней), из-за чего
+    # механизмы перетирали друг друга. Теперь pause_shift тоже пишет/обновляет строку прогресса
+    # за текущую дату (upsert, накапливая в пределах дня), а actual_qty ВСЕГДА = SUM(прогресса).
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    note = (f"Завершение смены: {body.comment}" if body.comment else "Завершение смены")
+    await db.execute(
+        pg_insert(ProductionDailyProgress)
+        .values(batch_id=body.batchId, production_date=today,
+                qty_produced=body.qtyProduced, comment=note)
+        .on_conflict_do_update(
+            constraint="uq_batch_date",
+            set_={"qty_produced": ProductionDailyProgress.qty_produced + body.qtyProduced,
+                  "comment": note, "updated_at": func.now()},
+        )
+    )
+    new_actual = int((await db.execute(
+        select(func.coalesce(func.sum(ProductionDailyProgress.qty_produced), 0))
+        .where(ProductionDailyProgress.batch_id == body.batchId)
+    )).scalar_one())
     await db.execute(
         update(ProductionBatch)
         .where(ProductionBatch.batch_id == body.batchId)
@@ -1523,22 +1515,35 @@ async def submit_otk(order_id: int, body: SubmitOtkRequest, request: Request):
     if not my_stage and u.role not in ("admin", "manager"):
         raise HTTPException(403, "Вы не назначены на этот заказ")
 
+    # Скоуп позиции: если этап исполнителя привязан к позиции (order_item_id),
+    # сдаём в ОТК только партии этой позиции; для legacy (NULL) — по всему заказу.
+    scope_item_id = my_stage.order_item_id if my_stage else None
+
     # Завершаем все активные/запланированные партии (включая уже отправленные ранее — при повторной сдаче)
-    batches = (await db.execute(
-        select(ProductionBatch).where(
-            ProductionBatch.order_id == order_id,
-            ProductionBatch.status.in_(["Запущена", "На паузе", "Запланировано", "Готов к проверке ОТК"])
-        )
-    )).scalars().all()
+    _batches_q = select(ProductionBatch).where(
+        ProductionBatch.order_id == order_id,
+        ProductionBatch.status.in_(["Запущена", "На паузе", "Запланировано", "Готов к проверке ОТК"])
+    )
+    if scope_item_id is not None:
+        _batches_q = _batches_q.where(ProductionBatch.order_item_id == scope_item_id)
+    batches = (await db.execute(_batches_q)).scalars().all()
 
     otk_ids = []
     for batch in batches:
-        actual = int(batch.actual_qty or batch.planned_qty)
+        # Идемпотентность: если по этой партии otk_batch уже создан (например через
+        # complete_batch), повторно его не создаём — иначе дублируются ОТК-карточки.
+        existing_otk = (await db.execute(text(
+            "SELECT 1 FROM otk_batches WHERE source_batch_id=:src LIMIT 1"
+        ), {"src": batch.batch_id})).scalar_one_or_none()
+        # actual = факт, если он задан (включая 0); план подставляем только когда факт NULL.
+        actual = int(batch.actual_qty if batch.actual_qty is not None else batch.planned_qty)
         await db.execute(
             update(ProductionBatch)
             .where(ProductionBatch.batch_id == batch.batch_id)
             .values(actual_qty=actual, status="Готов к проверке ОТК", end_date=func.now())
         )
+        if existing_otk:
+            continue
         otk_id = await _gen_otk_id(db, batch.production_type, str(u.id))
         await db.execute(text("""
             INSERT INTO otk_batches (batch_id, product_name, production_type, released_qty, maker_id,
@@ -1565,13 +1570,20 @@ async def submit_otk(order_id: int, body: SubmitOtkRequest, request: Request):
         otk_ids.append(otk_id)
 
     # Повторная сдача после брака = исполнитель переделал работу. Прежние
-    # забракованные партии этого заказа больше не должны держать его открытым
-    # (иначе статус-машина вечно возвращала бы 'Доработка'). Помечаем их
-    # 'Переделан' — этот статус нигде не учитывается в пересчёте статуса.
-    await db.execute(text("""
-        UPDATE otk_batches SET status='Переделан'
-        WHERE order_id=:oid AND status='брак'
-    """), {"oid": order_id})
+    # забракованные партии больше не должны держать заказ открытым (иначе
+    # статус-машина вечно возвращала бы 'Доработка'). Помечаем их 'Переделан'
+    # — этот статус нигде не учитывается в пересчёте статуса. Скоупим по позиции,
+    # когда она известна; для legacy (NULL) — по всему заказу.
+    if scope_item_id is not None:
+        await db.execute(text("""
+            UPDATE otk_batches SET status='Переделан'
+            WHERE order_id=:oid AND status='брак' AND order_item_id=:iid
+        """), {"oid": order_id, "iid": scope_item_id})
+    else:
+        await db.execute(text("""
+            UPDATE otk_batches SET status='Переделан'
+            WHERE order_id=:oid AND status='брак'
+        """), {"oid": order_id})
 
     # Сохраняем фото и обновляем статус заказа
     update_vals: dict = {"status": "На проверке ОТК", "updated_at": func.now()}
@@ -1581,12 +1593,21 @@ async def submit_otk(order_id: int, body: SubmitOtkRequest, request: Request):
 
     # Реактивируем ОТК-этап если он есть (done/blocked → pending).
     # 'blocked' возникает после возврата на доработку — при повторной сдаче
-    # этап ОТК снова должен стать активным.
-    await db.execute(text("""
-        UPDATE order_stages
-        SET status='pending', started_at=NULL, completed_at=NULL, updated_at=NOW()
-        WHERE order_id=:oid AND stage_type='otk' AND status IN ('done', 'blocked')
-    """), {"oid": order_id})
+    # этап ОТК снова должен стать активным. Скоупим по позиции, когда она известна;
+    # для legacy (NULL) — по всему заказу.
+    if scope_item_id is not None:
+        await db.execute(text("""
+            UPDATE order_stages
+            SET status='pending', started_at=NULL, completed_at=NULL, updated_at=NOW()
+            WHERE order_id=:oid AND stage_type='otk' AND status IN ('done', 'blocked')
+              AND order_item_id=:iid
+        """), {"oid": order_id, "iid": scope_item_id})
+    else:
+        await db.execute(text("""
+            UPDATE order_stages
+            SET status='pending', started_at=NULL, completed_at=NULL, updated_at=NOW()
+            WHERE order_id=:oid AND stage_type='otk' AND status IN ('done', 'blocked')
+        """), {"oid": order_id})
 
     # Авто-уведомление операторам ОТК о новой партии на проверку
     await notify_roles(
@@ -1601,10 +1622,13 @@ async def submit_otk(order_id: int, body: SubmitOtkRequest, request: Request):
 
 
 async def _reactivate_rework_stage(db, order_id: int, rework_stage_id=None,
-                                   rework_stage_type=None):
+                                   rework_stage_type=None, order_item_id=None):
     """Вернуть заказ на доработку: реактивировать нужный ПРОИЗВОДСТВЕННЫЙ этап
     (и его исполнителей) → 'pending', а ОТК-этап → 'blocked'. Так брак уходит
     обратно исполнителю, а не дальше по маршруту.
+
+    Скоуп по позиции: если order_item_id задан — выбор target-этапа и блокировку
+    ОТК ограничиваем этой позицией; иначе (legacy/order-level) — по всему заказу.
 
     Приоритет выбора этапа:
       1) явный id этапа от ОТК;
@@ -1613,12 +1637,18 @@ async def _reactivate_rework_stage(db, order_id: int, rework_stage_id=None,
       4) фолбэк — последний по маршруту не-ОТК этап (любой статус).
     Возвращает id реактивированного этапа или None.
     """
+    # Условие скоупа по позиции (для запросов по order_stages этого заказа)
+    item_scope = "AND order_item_id = :iid" if order_item_id is not None else ""
+    base = {"oid": order_id}
+    if order_item_id is not None:
+        base["iid"] = order_item_id
+
     # Позиция ОТК-этапа в маршруте (любой статус) — потолок для авто-выбора
-    otk_sort = (await db.execute(text("""
+    otk_sort = (await db.execute(text(f"""
         SELECT sort_order FROM order_stages
-        WHERE order_id=:oid AND stage_type='otk'
+        WHERE order_id=:oid AND stage_type='otk' {item_scope}
         ORDER BY sort_order DESC LIMIT 1
-    """), {"oid": order_id})).scalar()
+    """), base)).scalar()
 
     target = None
     if rework_stage_id:
@@ -1627,24 +1657,24 @@ async def _reactivate_rework_stage(db, order_id: int, rework_stage_id=None,
             WHERE id=:sid AND order_id=:oid AND stage_type != 'otk'
         """), {"sid": rework_stage_id, "oid": order_id})).scalar_one_or_none()
     if not target and rework_stage_type:
-        target = (await db.execute(text("""
+        target = (await db.execute(text(f"""
             SELECT id FROM order_stages
-            WHERE order_id=:oid AND stage_type=:st AND stage_type != 'otk'
+            WHERE order_id=:oid AND stage_type=:st AND stage_type != 'otk' {item_scope}
             ORDER BY (status='done') DESC, sort_order DESC LIMIT 1
-        """), {"oid": order_id, "st": rework_stage_type})).scalar_one_or_none()
+        """), {**base, "st": rework_stage_type})).scalar_one_or_none()
     if not target:
-        target = (await db.execute(text("""
+        target = (await db.execute(text(f"""
             SELECT id FROM order_stages
-            WHERE order_id=:oid AND stage_type != 'otk' AND status='done'
+            WHERE order_id=:oid AND stage_type != 'otk' AND status='done' {item_scope}
               AND (CAST(:ms AS INTEGER) IS NULL OR sort_order <= :ms)
             ORDER BY sort_order DESC, completed_at DESC NULLS LAST LIMIT 1
-        """), {"oid": order_id, "ms": otk_sort})).scalar_one_or_none()
+        """), {**base, "ms": otk_sort})).scalar_one_or_none()
     if not target:
-        target = (await db.execute(text("""
+        target = (await db.execute(text(f"""
             SELECT id FROM order_stages
-            WHERE order_id=:oid AND stage_type != 'otk'
+            WHERE order_id=:oid AND stage_type != 'otk' {item_scope}
             ORDER BY sort_order DESC LIMIT 1
-        """), {"oid": order_id})).scalar_one_or_none()
+        """), base)).scalar_one_or_none()
 
     if target:
         await db.execute(text("""
@@ -1657,11 +1687,11 @@ async def _reactivate_rework_stage(db, order_id: int, rework_stage_id=None,
                 completed_at=NULL, updated_at=NOW() WHERE stage_id=:sid
         """), {"sid": target})
     # ОТК-этап(ы) блокируем до повторной сдачи, чтобы маршрут отражал реальность
-    await db.execute(text("""
+    await db.execute(text(f"""
         UPDATE order_stages SET status='blocked', started_at=NULL,
             completed_at=NULL, updated_at=NOW()
-        WHERE order_id=:oid AND stage_type='otk' AND status != 'blocked'
-    """), {"oid": order_id})
+        WHERE order_id=:oid AND stage_type='otk' AND status != 'blocked' {item_scope}
+    """), base)
     return target
 
 
@@ -1699,8 +1729,19 @@ async def return_rework(order_id: int, body: ReturnReworkRequest, request: Reque
         WHERE order_id=:oid AND status='Готов к проверке ОТК'
     """), {"oid": order_id})
 
+    # Если ОТК явно указал этап возврата — скоупим реактивацию/блокировку ОТК по его
+    # позиции (другие позиции не трогаем). Без явного этапа return_rework остаётся
+    # order-level (legacy): order_item_id=None → по всему заказу.
+    rework_item_id = None
+    if body.rework_stage_id:
+        rework_item_id = (await db.execute(
+            select(OrderStage.order_item_id).where(
+                OrderStage.id == body.rework_stage_id,
+                OrderStage.order_id == order_id)
+        )).scalar_one_or_none()
     rework_stage_id = await _reactivate_rework_stage(
-        db, order_id, body.rework_stage_id, body.rework_stage_type)
+        db, order_id, body.rework_stage_id, body.rework_stage_type,
+        order_item_id=rework_item_id)
 
     # Уведомления: исполнитель(и) реактивированного этапа + руководители
     msg = f"{order.product_name}: возврат на доработку. {comment}".strip()
@@ -1757,10 +1798,10 @@ async def transfer_stage(order_id: int, stage_id: int, request: Request):
     if u.role not in ("admin", "manager") and stage.assigned_to != str(u.id):
         raise HTTPException(403, "Вы не назначены на этот этап")
 
-    # Нельзя передать больше, чем количество заказа
-    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
-    if order and order.planned_qty and qty > int(order.planned_qty):
-        raise HTTPException(400, f"Нельзя передать {qty} шт. — количество заказа {order.planned_qty} шт.")
+    # Потолок: для пер-позиционного этапа — кол-во ПОЗИЦИИ, иначе — кол-во заказа (legacy)
+    cap, cap_label = await _stage_qty_cap(db, stage, order_id)
+    if cap and qty > cap:
+        raise HTTPException(400, f"Нельзя передать {qty} шт. — {cap_label} {cap} шт.")
 
     await db.execute(
         update(OrderStage).where(OrderStage.id == stage_id)
@@ -2204,17 +2245,18 @@ async def add_stage_assignee(order_id: int, stage_id: int, request: Request):
     if not stage:
         raise HTTPException(404, "Этап не найден")
 
-    # Сумма распределённого по исполнителям не должна превышать количество заказа
-    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
-    if order and order.planned_qty and qty_planned:
+    # Сумма распределённого по исполнителям не должна превышать потолок этапа:
+    # для пер-позиционного этапа — кол-во ПОЗИЦИИ, иначе — кол-во заказа (legacy).
+    cap, cap_label = await _stage_qty_cap(db, stage, order_id)
+    if cap and qty_planned:
         others_sum = (await db.execute(
             select(func.coalesce(func.sum(StageAssignee.qty_planned), 0))
             .where(StageAssignee.stage_id == stage_id, StageAssignee.user_id != user_id)
         )).scalar_one()
-        if int(others_sum) + qty_planned > int(order.planned_qty):
+        if int(others_sum) + qty_planned > cap:
             raise HTTPException(
                 400, f"Распределено {int(others_sum) + qty_planned} шт. "
-                     f"при количестве заказа {order.planned_qty} шт.")
+                     f"при {cap_label} {cap} шт.")
 
     # Upsert: если уже есть — обновить количество
     existing = (await db.execute(
@@ -2387,7 +2429,7 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
     """После завершения этапа: записать на склад (если warehouse) и активировать
     следующий этап(ы). Вызывается из обоих путей завершения — ручного complete_stage
     и автоматического (когда все испол(assignees) сдали свою часть)."""
-    # Если этап — склад готовой продукции, записываем в finished_goods переданное количество.
+    # Если этап — склад готовой продукции, записываем в finished_goods.
     # Имя изделия берём у позиции (order_item) этапа; для legacy — у шапки заказа.
     if stage.stage_type in FINISHED_GOODS_STAGES and order:
         fg_name = order.product_name
@@ -2401,16 +2443,42 @@ async def _advance_workflow_after_stage(db, order, stage, stage_assignees):
                 fg_name = _it[0] or fg_name
                 fg_planned = int(_it[1] or 0)
         done_total = sum(int(a.qty_done or 0) for a in stage_assignees)
-        qty = int(stage.transferred_qty or 0) or done_total or fg_planned
+        # (b) Приходуем только ГОДНОЕ: если по позиции есть проверенные ОТК-партии —
+        # берём сумму good_qty (брак на склад ГП не попадает); иначе переданное кол-во.
+        good_qty = None
+        otk_scope = "AND order_item_id = :iid" if stage.order_item_id is not None else ""
+        otk_params = {"oid": stage.order_id}
+        if stage.order_item_id is not None:
+            otk_params["iid"] = stage.order_item_id
+        otk_row = (await db.execute(text(f"""
+            SELECT COALESCE(SUM(good_qty), 0) AS good,
+                   COUNT(*) FILTER (WHERE status != 'Принята') AS inspected
+            FROM otk_batches WHERE order_id = :oid {otk_scope}
+        """), otk_params)).mappings().one_or_none()
+        if otk_row and int(otk_row["inspected"] or 0) > 0:
+            good_qty = int(otk_row["good"] or 0)
+        qty = good_qty if good_qty is not None \
+            else (int(stage.transferred_qty or 0) or done_total or fg_planned)
         if fg_name and qty > 0:
-            await db.execute(text("""
-                INSERT INTO finished_goods (product_name, good_qty, defect_qty, total_qty, updated_at)
-                VALUES (:pn, :qty, 0, :qty, NOW())
-                ON CONFLICT (product_name) DO UPDATE
-                SET good_qty = finished_goods.good_qty + :qty,
-                    total_qty = finished_goods.total_qty + :qty,
-                    updated_at = NOW()
-            """), {"pn": fg_name, "qty": qty})
+            # (a) Идемпотентность: один этап приходует ГП ровно один раз, даже при
+            # переделке. Маркер FG-STAGE-{stage.id} в operations с UNIQUE operation_id;
+            # приходуем только если маркер реально вставился (ON CONFLICT DO NOTHING).
+            marker = await db.execute(text("""
+                INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
+                VALUES ('FG_RECEIPT', :pn, :qty, :note, :oid)
+                ON CONFLICT (operation_id) DO NOTHING
+            """), {"pn": fg_name, "qty": qty,
+                   "note": f"Оприходование ГП по этапу #{stage.id} (заказ #{stage.order_id})",
+                   "oid": f"FG-STAGE-{stage.id}"})
+            if marker.rowcount:
+                await db.execute(text("""
+                    INSERT INTO finished_goods (product_name, good_qty, defect_qty, total_qty, updated_at)
+                    VALUES (:pn, :qty, 0, :qty, NOW())
+                    ON CONFLICT (product_name) DO UPDATE
+                    SET good_qty = finished_goods.good_qty + :qty,
+                        total_qty = finished_goods.total_qty + :qty,
+                        updated_at = NOW()
+                """), {"pn": fg_name, "qty": qty})
 
     # Активировать следующий этап если указан next_stage_id
     if stage.next_stage_id:
@@ -2616,6 +2684,10 @@ async def inspect_stage(order_id: int, stage_id: int, body: StageInspectRequest,
     if result not in ("pass", "fail"):
         raise HTTPException(400, "result должен быть 'pass' или 'fail'")
 
+    # Скоуп по позиции гейта: брак возвращаем в этап ТОЙ ЖЕ позиции, что и гейт-этап.
+    # Для legacy (order_item_id IS NULL) — по всему заказу.
+    gate_item_scope = "AND order_item_id = :iid" if stage.order_item_id is not None else ""
+
     # Выбор этапа-источника для возврата брака
     target = None
     if body.rework_stage_id:
@@ -2623,17 +2695,23 @@ async def inspect_stage(order_id: int, stage_id: int, body: StageInspectRequest,
             SELECT id FROM order_stages WHERE id=:sid AND order_id=:oid AND id != :gate
         """), {"sid": body.rework_stage_id, "oid": order_id, "gate": stage_id})).scalar_one_or_none()
     if not target and target_type:
-        target = (await db.execute(text("""
+        _p = {"oid": order_id, "st": target_type, "gate": stage_id, "gs": stage.sort_order}
+        if stage.order_item_id is not None:
+            _p["iid"] = stage.order_item_id
+        target = (await db.execute(text(f"""
             SELECT id FROM order_stages
-            WHERE order_id=:oid AND stage_type=:st AND id != :gate AND sort_order < :gs
+            WHERE order_id=:oid AND stage_type=:st AND id != :gate AND sort_order < :gs {gate_item_scope}
             ORDER BY (status='done') DESC, sort_order DESC LIMIT 1
-        """), {"oid": order_id, "st": target_type, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
+        """), _p)).scalar_one_or_none()
     if not target:
-        target = (await db.execute(text("""
+        _p = {"oid": order_id, "gate": stage_id, "gs": stage.sort_order}
+        if stage.order_item_id is not None:
+            _p["iid"] = stage.order_item_id
+        target = (await db.execute(text(f"""
             SELECT id FROM order_stages
-            WHERE order_id=:oid AND id != :gate AND sort_order < :gs
+            WHERE order_id=:oid AND id != :gate AND sort_order < :gs {gate_item_scope}
             ORDER BY sort_order DESC LIMIT 1
-        """), {"oid": order_id, "gate": stage_id, "gs": stage.sort_order})).scalar_one_or_none()
+        """), _p)).scalar_one_or_none()
 
     if target:
         await db.execute(text("""
