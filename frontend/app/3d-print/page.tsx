@@ -39,8 +39,11 @@ export default function PrintPage() {
   async function load() {
     setFetching(true);
     try {
-      const [all, comps] = await Promise.all([api.getProductionBatches(), api.getComponents()]);
+      // getComponents() требует warehouse.view, которого нет у operator_3d → 403.
+      // Не даём складскому вызову уронить всю очередь печати.
+      const all = await api.getProductionBatches();
       setBatches(all.filter(b => b.production_type === PROD_TYPE));
+      const comps = await api.getComponents().catch(() => [] as Component[]);
       setStock(comps.filter(c => c.source === "3d_print"));
     } catch {}
     setFetching(false);

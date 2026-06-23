@@ -34,7 +34,7 @@ interface ShipHistoryItem {
 }
 
 export default function ShipmentPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, hasPermission } = useAuth();
   const router = useRouter();
 
   const [ready, setReady] = useState<ReadyOrder[]>([]);
@@ -123,6 +123,14 @@ export default function ShipmentPage() {
   }
 
   if (loading || !user) return null;
+
+  if (!hasPermission("otk.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
 
   const totalReady = ready.reduce((s, o) => s + (o.batches ?? []).reduce((ss, b) => ss + b.remaining_qty, 0), 0);
   const totalShipped = history.reduce((s, h) => s + (h.shipped_qty ?? 0), 0);

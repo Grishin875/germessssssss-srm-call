@@ -298,7 +298,7 @@ export default function DashboardPage() {
                             {s.stage_name || STAGE_TYPE_LABELS[s.stage_type] || s.stage_type}
                           </div>
                           <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-                            {s.order.product_name} · {s.order.planned_qty} шт
+                            {(s.item_product_name ?? s.order.product_name)} · {(s.item_planned_qty ?? s.order.planned_qty)} шт
                             {s.order.deadline && ` · до ${new Date(s.order.deadline).toLocaleDateString("ru")}`}
                           </div>
                         </div>

@@ -122,6 +122,14 @@ export default function ProcurementPage() {
   }
 
   if (loading || !user) return null;
+
+  if (!hasPermission("warehouse.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
   const tabStyle = (k: string) => ({
     padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 600,
     background: tab === k ? "var(--bg)" : "transparent", color: tab === k ? "var(--text)" : "var(--text-secondary)",

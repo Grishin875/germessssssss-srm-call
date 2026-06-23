@@ -43,7 +43,19 @@ async function request<T = unknown>(endpoint: string, options: RequestInit = {})
     let msg = `HTTP ${res.status}`;
     try {
       const err = await res.json();
-      msg = err.error || err.message || msg;
+      // FastAPI отдаёт ошибки в поле `detail` (строка или массив validation-ошибок).
+      let detail: string | undefined;
+      if (Array.isArray(err.detail)) {
+        detail = err.detail
+          .map((d: unknown) =>
+            typeof d === "string" ? d : (d as { msg?: string })?.msg
+          )
+          .filter(Boolean)
+          .join("; ") || undefined;
+      } else if (typeof err.detail === "string") {
+        detail = err.detail;
+      }
+      msg = detail || err.error || err.message || msg;
     } catch {}
     throw new Error(msg);
   }
@@ -1266,10 +1278,16 @@ export interface MyStage extends OrderStage {
   order_product_name: string;
   order_planned_qty: number;
   order_deadline?: string;
+  item_product_name?: string;   // продукт ПОЗИЦИИ этапа (приоритетнее заголовка)
+  item_planned_qty?: number;
 }
 
 export interface MyOrder extends Order {
-  my_stages: (OrderStage & { components: { name: string; qty: number; source?: string }[] })[];
+  my_stages: (OrderStage & {
+    components: { name: string; qty: number; source?: string }[];
+    item_product_name?: string;
+    item_planned_qty?: number;
+  })[];
 }
 
 export interface AvailabilityItem {

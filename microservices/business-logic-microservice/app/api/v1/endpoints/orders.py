@@ -438,8 +438,10 @@ async def my_stages(request: Request):
         .where(StageAssignee.user_id == u.id, StageAssignee.status != "cancelled")
     )
     result = await db.execute(
-        select(OrderStage, Order.product_name, Order.planned_qty, Order.deadline, Order.id)
+        select(OrderStage, Order.product_name, Order.planned_qty, Order.deadline, Order.id,
+               OrderItem.product_name, OrderItem.planned_qty)
         .join(Order, Order.id == OrderStage.order_id)
+        .outerjoin(OrderItem, OrderItem.id == OrderStage.order_item_id)
         .where(
             or_(OrderStage.assigned_to == str(u.id),
                 OrderStage.id.in_(my_assignee_stage_ids)),
@@ -456,6 +458,9 @@ async def my_stages(request: Request):
         d["order_product_name"] = row[1]
         d["order_planned_qty"] = row[2]
         d["order_deadline"] = str(row[3]) if row[3] else None
+        # Изделие/кол-во КОНКРЕТНОЙ позиции этапа (для мультипозиции); legacy → шапка заказа
+        d["item_product_name"] = row[5] or row[1]
+        d["item_planned_qty"] = row[6] if row[6] is not None else row[2]
         sa = (await db.execute(
             select(StageAssignee).where(
                 StageAssignee.stage_id == stage.id, StageAssignee.user_id == u.id)
@@ -505,7 +510,19 @@ async def my_orders(request: Request):
             .order_by(OrderStage.sort_order)
         )
         my_stages_for_order = stages_result.scalars().all()
-        d["my_stages"] = [{**_m(s), "components": s.components} for s in my_stages_for_order]
+        # Карта позиций заказа: id -> (изделие, кол-во) — чтобы у каждого этапа было
+        # изделие его позиции, а не шапки (мультипозиция). Legacy → шапка.
+        item_rows = (await db.execute(
+            select(OrderItem.id, OrderItem.product_name, OrderItem.planned_qty)
+            .where(OrderItem.order_id == o.id)
+        )).all()
+        item_map = {r[0]: (r[1], r[2]) for r in item_rows}
+        def _enrich(s):
+            it = item_map.get(s.order_item_id)
+            return {**_m(s), "components": s.components,
+                    "item_product_name": it[0] if it else o.product_name,
+                    "item_planned_qty": it[1] if it else o.planned_qty}
+        d["my_stages"] = [_enrich(s) for s in my_stages_for_order]
         out.append(d)
     return out
 

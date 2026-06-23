@@ -21,6 +21,20 @@ const IcoTrash = () => (
   </svg>
 );
 
+// Отделы доступа — значения совпадают с backend, лейблы человекочитаемые.
+const DEPARTMENTS: { value: string; label: string }[] = [
+  { value: "warehouse",      label: "Склад" },
+  { value: "recipes",        label: "Рецептуры" },
+  { value: "orders",         label: "Заказы" },
+  { value: "production",     label: "Производство" },
+  { value: "shift-schedule", label: "График смен" },
+  { value: "otk",            label: "ОТК" },
+  { value: "sc",             label: "Сервисный центр" },
+  { value: "users",          label: "Пользователи" },
+  { value: "tasks",          label: "Задачи" },
+  { value: "archive",        label: "Архив" },
+];
+
 export default function UsersPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -29,7 +43,7 @@ export default function UsersPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
-  const [form, setForm] = useState({ username: "", password: "", full_name: "", role: "user", email: "", is_active: true });
+  const [form, setForm] = useState<{ username: string; password: string; full_name: string; role: string; email: string; is_active: boolean; departments_access: string[] }>({ username: "", password: "", full_name: "", role: "user", email: "", is_active: true, departments_access: [] });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -47,8 +61,8 @@ export default function UsersPage() {
     if (!editUser && !form.password.trim()) { setError("Пароль обязателен"); return; }
     setSaving(true); setError("");
     try {
-      if (editUser) await api.updateUser(editUser.id, { username: form.username, full_name: form.full_name, role: form.role, email: form.email, is_active: form.is_active, ...(form.password ? { password: form.password } : {}) });
-      else await api.createUser({ username: form.username, password: form.password, full_name: form.full_name, role: form.role, email: form.email });
+      if (editUser) await api.updateUser(editUser.id, { username: form.username, full_name: form.full_name, role: form.role, email: form.email, is_active: form.is_active, departments_access: form.departments_access, ...(form.password ? { password: form.password } : {}) });
+      else await api.createUser({ username: form.username, password: form.password, full_name: form.full_name, role: form.role, email: form.email, departments_access: form.departments_access });
       setShowCreate(false); setEditUser(null);
       load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
@@ -74,7 +88,7 @@ export default function UsersPage() {
               />
               Показать неактивных
             </label>
-            <Button onClick={() => { setShowCreate(true); setEditUser(null); setForm({ username: "", password: "", full_name: "", role: "user", email: "", is_active: true }); setError(""); }}>
+            <Button onClick={() => { setShowCreate(true); setEditUser(null); setForm({ username: "", password: "", full_name: "", role: "user", email: "", is_active: true, departments_access: [] }); setError(""); }}>
               Создать
             </Button>
           </div>
@@ -111,7 +125,7 @@ export default function UsersPage() {
                       <td>
                         <div style={{ display: "flex", gap: 4 }}>
                           <button
-                            onClick={() => { setEditUser(u); setForm({ username: u.username, password: "", full_name: u.full_name || "", role: u.role, email: u.email || "", is_active: u.is_active }); setShowCreate(true); setError(""); }}
+                            onClick={() => { setEditUser(u); setForm({ username: u.username, password: "", full_name: u.full_name || "", role: u.role, email: u.email || "", is_active: u.is_active, departments_access: u.departments_access || [] }); setShowCreate(true); setError(""); }}
                             style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px 6px", borderRadius: 5, display: "flex", alignItems: "center" }}
                             onMouseEnter={e => (e.currentTarget.style.color = "var(--primary)")}
                             onMouseLeave={e => (e.currentTarget.style.color = "var(--text-muted)")}
@@ -179,7 +193,32 @@ export default function UsersPage() {
               <option value="operator_engraving">Гравёр</option>
               <option value="operator_otk">Оператор ОТК</option>
               <option value="operator_shipment">Оператор отгрузки</option>
+              <option value="warehouse">{ROLE_LABELS.warehouse}</option>
             </select>
+          </div>
+          <div>
+            <label>Отделы доступа</label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6, marginTop: 4 }}>
+              {DEPARTMENTS.map(d => {
+                const checked = form.departments_access.includes(d.value);
+                return (
+                  <label key={d.value} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)", cursor: "pointer", fontWeight: 400 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => setForm({
+                        ...form,
+                        departments_access: e.target.checked
+                          ? [...form.departments_access, d.value]
+                          : form.departments_access.filter(v => v !== d.value),
+                      })}
+                      style={{ width: 15, height: 15 }}
+                    />
+                    {d.label}
+                  </label>
+                );
+              })}
+            </div>
           </div>
           {editUser && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)", cursor: "pointer", fontWeight: 400 }}>

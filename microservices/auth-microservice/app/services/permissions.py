@@ -58,22 +58,22 @@ ROLE_DEFAULT_PERMISSIONS: Dict[str, Dict[str, bool]] = {
         "tasks.manage": True, "users.view": True,
     },
     "operator_smd": {
-        "dashboard.view": True,
+        "dashboard.view": True, "orders.view": True,
         "production.view": True, "production.start": True, "production.pause_complete": True,
         "recipes.view": True, "shift_schedule.view": True, "tasks.view": True,
     },
     "montažnik": {
-        "dashboard.view": True,
+        "dashboard.view": True, "orders.view": True,
         "production.view": True, "production.start": True, "production.pause_complete": True,
         "recipes.view": True, "shift_schedule.view": True, "tasks.view": True,
     },
     "operator_3d": {
-        "dashboard.view": True,
+        "dashboard.view": True, "orders.view": True,
         "production.view": True, "production.start": True, "production.pause_complete": True,
         "recipes.view": True, "shift_schedule.view": True, "tasks.view": True,
     },
     "operator_engraving": {
-        "dashboard.view": True,
+        "dashboard.view": True, "orders.view": True,
         "production.view": True, "production.start": True, "production.pause_complete": True,
         "recipes.view": True, "shift_schedule.view": True, "tasks.view": True,
     },
@@ -88,7 +88,7 @@ ROLE_DEFAULT_PERMISSIONS: Dict[str, Dict[str, bool]] = {
         "shift_schedule.view": True, "tasks.view": True,
     },
     "warehouse": {
-        "dashboard.view": True,
+        "dashboard.view": True, "orders.view": True,
         "warehouse.view": True, "warehouse.edit": True,
         "production.view": True, "recipes.view": True,
         "shift_schedule.view": True, "tasks.view": True, "archive.view": True,
@@ -122,7 +122,11 @@ def restrict_permissions(role: str, departments: List[str], raw: Optional[Dict])
 
 def resolve_permissions(role: str, departments: List[str], stored: Optional[Dict]) -> Dict[str, bool]:
     normalized = {k: bool(v) for k, v in (stored or {}).items()}
-    # Если у производственной роли нет базовых прав — перестраиваем
-    if not normalized or (role in ROLE_DEFAULT_PERMISSIONS and not normalized.get("production.view") and not normalized.get("orders.view")):
-        return build_default_permissions(role, departments)
-    return normalized
+    # Базовые права роли применяются ВСЕГДА, а индивидуальные сохранённые права
+    # наслаиваются сверху (могут добавить или переопределить). Плюсы:
+    #  • обновление дефолтов роли (напр. новый orders.view у произв./склада) доходит
+    #    до УЖЕ созданных пользователей без миграции БД;
+    #  • кастомные права, выданные админом через форму, не теряются (не затираются);
+    #  • роли без production.view/orders.view (напр. operator_shipment) больше не
+    #    сбрасываются и могут получать доп. права.
+    return {**build_default_permissions(role, departments), **normalized}

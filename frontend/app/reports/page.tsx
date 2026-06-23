@@ -29,7 +29,7 @@ const ALL_STATUSES = ["Создан","В работе","На проверке О
 const STORAGE = "germess_report_templates";
 
 export default function ReportsPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, hasPermission } = useAuth();
   const router = useRouter();
 
   const [cols, setCols] = useState<Set<string>>(new Set(["id", "product_name", "planned_qty", "status", "priority", "deadline"]));
@@ -106,6 +106,14 @@ export default function ReportsPage() {
   }
 
   if (loading || !user) return null;
+
+  if (!hasPermission("orders.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>

@@ -186,6 +186,12 @@ export default function MyTasksPage() {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                               <span style={{ fontWeight: 600, fontSize: 14 }}>{stage.stage_name || typeInfo.label}</span>
+                              {/* Продукт ПОЗИЦИИ этапа — показываем, если отличается от заголовка заказа */}
+                              {stage.item_product_name && stage.item_product_name !== order.product_name && (
+                                <span style={{ fontSize: 11, fontWeight: 600, padding: "1px 7px", borderRadius: 20, background: "var(--bg-primary)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+                                  {stage.item_product_name}{stage.item_planned_qty != null ? ` · ${stage.item_planned_qty} шт` : ""}
+                                </span>
+                              )}
                               <span style={{ fontSize: 11, fontWeight: 600, padding: "1px 7px", borderRadius: 20, background: typeInfo.color + "20", color: typeInfo.color }}>
                                 {typeInfo.label}
                               </span>

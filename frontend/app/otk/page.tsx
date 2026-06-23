@@ -15,7 +15,7 @@ import { toast } from "../../components/ui/Toast";
 function fmt(d: Date) { return d.toISOString().slice(0, 10); }
 
 export default function OtkPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, hasPermission } = useAuth();
   const { labelMap: STAGE_TYPE_LABELS } = useStageTypes();
   const router = useRouter();
 
@@ -166,6 +166,14 @@ export default function OtkPage() {
   }
 
   if (loading || !user) return null;
+
+  if (!hasPermission("otk.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
   const isAdmin = user.role === "admin" || user.role === "manager";
   const isOtkOperator = user.role === "operator_otk";
 

@@ -45,7 +45,7 @@ function ProductPicker({ value, onChange, products }: {
 }
 
 export default function ReservePage() {
-  const { user, loading } = useAuth();
+  const { user, loading, hasPermission } = useAuth();
   const router = useRouter();
   const [products, setProducts] = useState<string[]>([]);
   const [product, setProduct] = useState("");
@@ -102,6 +102,14 @@ export default function ReservePage() {
   }
 
   if (loading || !user) return null;
+
+  if (!hasPermission("warehouse.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>

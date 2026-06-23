@@ -390,6 +390,14 @@ export default function WarehousePage() {
 
   if (loading || !user) return null;
 
+  if (!hasPermission("warehouse.view")) {
+    return (
+      <AppLayout>
+        <div className="text-center py-20 text-gray-500">Нет доступа</div>
+      </AppLayout>
+    );
+  }
+
   const filtered = components.filter(c => {
     if (catFilter && c.category !== catFilter) return false;
     if (search && !c.name.toLowerCase().includes(search.toLowerCase())) return false;
