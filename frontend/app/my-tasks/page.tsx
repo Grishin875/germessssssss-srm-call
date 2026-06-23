@@ -68,7 +68,7 @@ export default function MyTasksPage() {
     if (!otkModal) return;
     setSubmittingOtk(otkModal.id);
     try {
-      await api.submitOtk(otkModal.id);
+      await api.submitOtk(otkModal.id, otkPhoto.trim() || undefined);
       setOtkModal(null);
       setOtkPhoto("");
       await load();

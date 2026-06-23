@@ -139,7 +139,7 @@ export default function TrainingPage() {
                             Скачать
                           </Button>
                           <Button size="sm" variant="secondary"
-                            onClick={() => router.push(`/documents`)}>
+                            onClick={() => window.open(api.documentDownloadUrl(doc.id), "_blank")}>
                             Открыть
                           </Button>
                         </div>

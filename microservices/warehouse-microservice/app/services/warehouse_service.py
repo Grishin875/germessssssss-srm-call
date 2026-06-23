@@ -7,16 +7,18 @@ from app.models.warehouse import (
     WarehouseComponent, Operation, ProductionStock, Case,
     Warehouse, WarehouseStock, DEFAULT_WAREHOUSES, WAREHOUSE_TYPE_LABELS,
     Supplier, PurchaseRequest, PurchaseRequestItem, PURCHASE_STATUSES, PURCHASE_STATUS_LABELS,
+    ComponentRequest, COMPONENT_REQUEST_STATUS_LABELS,
 )
 from app.schemas.warehouse import (
     ComponentCreate, ComponentUpdate, BatchOperationRequest, CaseCreate, CaseUpdate,
     ReserveForOrderRequest, WarehouseCreate, WarehouseUpdate, WarehouseOut,
     WarehouseStockOut, StockTransferRequest,
     SupplierCreate, SupplierUpdate, PurchaseRequestCreate, PurchaseRequestUpdate,
-    FromShortageRequest,
+    FromShortageRequest, ComponentRequestCreate,
 )
 
-WAREHOUSE_OP_TYPES = ["RECEIVE", "WRITEOFF", "CREATE", "UPDATE", "DELETE", "CANCEL", "TRANSFER"]
+WAREHOUSE_OP_TYPES = ["RECEIVE", "WRITEOFF", "CREATE", "UPDATE", "DELETE", "CANCEL", "TRANSFER",
+                      "RESERVE", "RESERVE_RELEASE"]
 
 
 def _norm(s: str) -> str:
@@ -43,8 +45,8 @@ async def list_components(db: AsyncSession) -> List[WarehouseComponent]:
     items = r.scalars().all()
     for c in items:
         c.stock = _to_float(c.stock)
-        c.available = _to_float(c.stock)
-        c.reserved_qty = 0.0
+        c.reserved_qty = _to_float(c.reserved)
+        c.available = c.stock - c.reserved_qty
         c.min_stock = _to_float(c.min_stock) if c.min_stock else None
         c.units_per_reel = _to_float(c.units_per_reel) if c.units_per_reel else None
         c.block = c.block or "СМД"
@@ -55,8 +57,8 @@ async def get_component_by_name(db: AsyncSession, name: str) -> Optional[Warehou
     c = await _get_by_name(db, name)
     if c:
         c.stock = _to_float(c.stock)
-        c.available = _to_float(c.stock)
-        c.reserved_qty = 0.0
+        c.reserved_qty = _to_float(c.reserved)
+        c.available = c.stock - c.reserved_qty
     return c
 
 
@@ -83,8 +85,8 @@ async def create_component(db: AsyncSession, data: ComponentCreate) -> Warehouse
         await _log_op(db, "CREATE", data.name, data.stock or 0, f"Категория: {data.category}")
         await db.commit()
         c = await _get_by_name(db, data.name)
-        c.available = _to_float(c.stock)
-        c.reserved_qty = 0.0
+        c.reserved_qty = _to_float(c.reserved)
+        c.available = _to_float(c.stock) - c.reserved_qty
         return c
 
     comp = WarehouseComponent(
@@ -100,8 +102,8 @@ async def create_component(db: AsyncSession, data: ComponentCreate) -> Warehouse
     await _log_op(db, "CREATE", data.name, data.stock or 0, f"Категория: {data.category}")
     await db.commit()
     await db.refresh(comp)
-    comp.available = _to_float(comp.stock)
-    comp.reserved_qty = 0.0
+    comp.reserved_qty = _to_float(comp.reserved)
+    comp.available = _to_float(comp.stock) - comp.reserved_qty
     return comp
 
 
@@ -127,8 +129,8 @@ async def update_component(db: AsyncSession, comp_id: int, data: ComponentUpdate
     await _log_op(db, "UPDATE", new_name, data.stock or 0, f"Обновление. Категория: {data.category}")
     await db.commit()
     c = await get_component_by_id(db, comp_id)
-    c.available = _to_float(c.stock)
-    c.reserved_qty = 0.0
+    c.reserved_qty = _to_float(c.reserved)
+    c.available = _to_float(c.stock) - c.reserved_qty
     return c
 
 
@@ -379,39 +381,46 @@ async def check_availability(db: AsyncSession, items: List[dict]) -> dict:
 
 
 async def verify_reservations(db: AsyncSession, fix: bool = False) -> dict:
-    """Проверка целостности складских остатков.
+    """Проверка целостности складских остатков и резервов.
 
-    В этой системе «резервирование» реализовано как немедленное списание
-    (WRITEOFF c operation_id ORDER-RESERVE-…), поэтому отдельного поля
-    reserved_qty в БД нет. Реальный инвариант, который имеет смысл
-    проверять — отсутствие отрицательных остатков (могут возникнуть при
-    ручном редактировании или гонке списаний).
+    Инвариант: 0 <= reserved <= stock (и stock не отрицателен). Аномалии могут
+    возникнуть при ручном редактировании или гонке списаний/резервов.
 
     fix=False — только отчёт об аномалиях.
-    fix=True  — отрицательные остатки приводятся к 0 с логированием
-                корректирующей операции RECEIVE.
+    fix=True  — reserved приводится к LEAST(GREATEST(reserved,0), stock),
+                отрицательный stock приводится к 0 (с логированием
+                корректирующей операции RECEIVE).
     """
-    rows = (await db.execute(
-        select(WarehouseComponent).where(WarehouseComponent.stock < 0)
-    )).scalars().all()
+    rows = (await db.execute(select(WarehouseComponent))).scalars().all()
 
     anomalies = []
     corrected = 0
     for c in rows:
-        before = _to_float(c.stock)
-        entry = {"component_name": c.name, "stock": before, "fixed": False}
+        stock = _to_float(c.stock)
+        reserved = _to_float(c.reserved)
+        new_stock = max(0.0, stock)
+        # clamp: 0 <= reserved <= stock
+        new_reserved = min(max(reserved, 0.0), new_stock)
+        if abs(new_stock - stock) < 1e-9 and abs(new_reserved - reserved) < 1e-9:
+            continue
+        entry = {
+            "component_name": c.name,
+            "stock": stock, "reserved": reserved,
+            "new_stock": new_stock, "new_reserved": new_reserved,
+            "fixed": False,
+        }
         if fix:
-            delta = -before  # сколько добавить, чтобы выйти в 0
             await db.execute(
                 update(WarehouseComponent)
                 .where(WarehouseComponent.id == c.id)
-                .values(stock=0)
+                .values(stock=new_stock, reserved=new_reserved)
             )
-            await _log_op(
-                db, "RECEIVE", c.name, delta,
-                "Корректировка отрицательного остатка (verify-reservations)",
-                op_id=_op_id("FIX-NEGSTOCK"),
-            )
+            if abs(new_stock - stock) > 1e-9:
+                await _log_op(
+                    db, "RECEIVE", c.name, new_stock - stock,
+                    "Корректировка отрицательного остатка (verify-reservations)",
+                    op_id=_op_id("FIX-NEGSTOCK"),
+                )
             entry["fixed"] = True
             corrected += 1
         anomalies.append(entry)
@@ -422,10 +431,10 @@ async def verify_reservations(db: AsyncSession, fix: bool = False) -> dict:
     return {
         "success": True,
         "message": (
-            f"Исправлено отрицательных остатков: {corrected}" if fix
+            f"Исправлено аномалий резерва/остатка: {corrected}" if fix
             else f"Найдено аномалий: {len(anomalies)}"
         ),
-        "checked": "negative_stock",
+        "checked": "reserved_within_stock",
         "anomalies_count": len(anomalies),
         "corrected_count": corrected,
         "corrections": anomalies,
@@ -689,7 +698,8 @@ async def transfer_stock(db: AsyncSession, data: StockTransferRequest) -> dict:
 
 async def reserve_for_order(db: AsyncSession, data: ReserveForOrderRequest) -> dict:
     """
-    Списывает складские компоненты под заказ.
+    Резервирует складские компоненты под заказ: reserved += qty.
+    Остаток stock НЕ списывается (списание происходит при отгрузке/закрытии).
     Идемпотентно: повторный вызов с тем же order_id будет отклонён.
     """
     op_prefix = f"ORDER-RESERVE-{data.order_id}"
@@ -700,26 +710,35 @@ async def reserve_for_order(db: AsyncSession, data: ReserveForOrderRequest) -> d
     if existing.scalar_one_or_none():
         raise ValueError(f"Компоненты для заказа #{data.order_id} уже были зарезервированы")
 
-    # Сначала проверяем наличие всего
+    # Сначала проверяем доступность всего: available = stock - COALESCE(reserved,0)
     for idx, item in enumerate(data.items):
         comp = await _get_by_name(db, item.component_name)
         if not comp:
             raise ValueError(f"Компонент не найден: '{item.component_name}'")
-        if _to_float(comp.stock) < item.quantity:
+        available = _to_float(comp.stock) - _to_float(comp.reserved)
+        if available < item.quantity:
             raise ValueError(
                 f"Недостаточно '{item.component_name}': "
-                f"нужно {item.quantity}, доступно {_to_float(comp.stock)}"
+                f"нужно {item.quantity}, доступно {available}"
             )
 
-    # Всё есть — списываем
+    # Всё есть — резервируем (reserved += qty) с guard'ом на доступность
     for idx, item in enumerate(data.items):
-        await db.execute(
+        res = await db.execute(
             update(WarehouseComponent)
-            .where(func.lower(WarehouseComponent.name) == _norm(item.component_name))
-            .values(stock=WarehouseComponent.stock - item.quantity)
+            .where(
+                func.lower(WarehouseComponent.name) == _norm(item.component_name),
+                (WarehouseComponent.stock - func.coalesce(WarehouseComponent.reserved, 0)) >= item.quantity,
+            )
+            .values(reserved=func.coalesce(WarehouseComponent.reserved, 0) + item.quantity)
         )
+        if res.rowcount == 0:
+            raise ValueError(
+                f"Недостаточно '{item.component_name}' для резервирования "
+                f"(нужно {item.quantity})"
+            )
         await _log_op(
-            db, "WRITEOFF", item.component_name, item.quantity,
+            db, "RESERVE", item.component_name, item.quantity,
             f"Резервирование под заказ #{data.order_id} / {data.product_name}",
             op_id=f"{op_prefix}-{idx}",
         )
@@ -976,3 +995,110 @@ async def create_from_shortage(db: AsyncSession, data: FromShortageRequest, crea
     await db.commit()
     await db.refresh(pr)
     return await _pr_to_out(db, pr)
+
+
+# ── Заявки на компоненты (брак / дозапрос) ────────────────────────────────────
+
+def _cr_to_out(cr: ComponentRequest) -> dict:
+    return {
+        "id": cr.id,
+        "order_id": cr.order_id,
+        "stage_id": cr.stage_id,
+        "component_name": cr.component_name,
+        "qty": _to_float(cr.qty),
+        "reason": cr.reason,
+        "status": cr.status,
+        "status_label": COMPONENT_REQUEST_STATUS_LABELS.get(cr.status, cr.status),
+        "requested_by": cr.requested_by,
+        "requested_by_name": cr.requested_by_name,
+        "issued_by": cr.issued_by,
+        "issued_by_name": cr.issued_by_name,
+        "comment": cr.comment,
+        "created_at": cr.created_at,
+        "updated_at": cr.updated_at,
+    }
+
+
+async def create_component_request(db: AsyncSession, data: ComponentRequestCreate,
+                                   user_id: int = None, user_name: str = None) -> dict:
+    if not data.component_name.strip():
+        raise ValueError("Название компонента обязательно")
+    cr = ComponentRequest(
+        order_id=data.order_id,
+        stage_id=data.stage_id,
+        component_name=data.component_name.strip(),
+        qty=data.qty,
+        reason=data.reason or "брак",
+        status="pending",
+        requested_by=user_id,
+        requested_by_name=user_name,
+        comment=data.comment,
+    )
+    db.add(cr)
+    await db.commit()
+    await db.refresh(cr)
+    return _cr_to_out(cr)
+
+
+async def list_component_requests(db: AsyncSession, status: str = None) -> List[dict]:
+    q = select(ComponentRequest).order_by(ComponentRequest.id.desc())
+    if status:
+        q = q.where(ComponentRequest.status == status)
+    rows = (await db.execute(q)).scalars().all()
+    return [_cr_to_out(cr) for cr in rows]
+
+
+async def issue_component_request(db: AsyncSession, req_id: int,
+                                  user_id: int = None, user_name: str = None) -> dict:
+    cr = (await db.execute(
+        select(ComponentRequest).where(ComponentRequest.id == req_id)
+    )).scalar_one_or_none()
+    if not cr:
+        raise ValueError("Заявка не найдена")
+    if cr.status == "issued":
+        raise ValueError("Заявка уже выдана")
+    qty = _to_float(cr.qty)
+    # Атомарно списываем остаток со склада
+    res = await db.execute(
+        text(
+            "UPDATE warehouse_components SET stock = stock - :qty "
+            "WHERE LOWER(TRIM(name)) = :n AND stock >= :qty"
+        ),
+        {"qty": qty, "n": _norm(cr.component_name)},
+    )
+    if res.rowcount == 0:
+        raise PermissionError("Недостаточно на складе")
+    await _log_op(
+        db, "WRITEOFF", cr.component_name, qty,
+        f"Выдача по заявке #{cr.id} (причина: {cr.reason})",
+        operator_id=str(user_id) if user_id is not None else None,
+        op_id=f"COMPREQ-{cr.id}",
+    )
+    await db.execute(
+        update(ComponentRequest).where(ComponentRequest.id == req_id).values(
+            status="issued", issued_by=user_id, issued_by_name=user_name,
+        )
+    )
+    await db.commit()
+    cr = (await db.execute(
+        select(ComponentRequest).where(ComponentRequest.id == req_id)
+    )).scalar_one()
+    return _cr_to_out(cr)
+
+
+async def reject_component_request(db: AsyncSession, req_id: int) -> dict:
+    cr = (await db.execute(
+        select(ComponentRequest).where(ComponentRequest.id == req_id)
+    )).scalar_one_or_none()
+    if not cr:
+        raise ValueError("Заявка не найдена")
+    if cr.status != "pending":
+        raise ValueError("Отклонить можно только заявку в статусе 'ожидает'")
+    await db.execute(
+        update(ComponentRequest).where(ComponentRequest.id == req_id).values(status="rejected")
+    )
+    await db.commit()
+    cr = (await db.execute(
+        select(ComponentRequest).where(ComponentRequest.id == req_id)
+    )).scalar_one()
+    return _cr_to_out(cr)

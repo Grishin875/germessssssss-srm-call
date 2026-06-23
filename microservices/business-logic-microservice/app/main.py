@@ -42,6 +42,13 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)"))
         # Руководители проекта (несколько) — только они закрывают заказ и печатают наряд
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS managers TEXT"))
+        # Комплектация заказа (несколько позиций для Excel) + даты получения/отправки
+        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS positions TEXT"))
+        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS received_date VARCHAR(50)"))
+        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipment_date VARCHAR(50)"))
+        # Резерв компонентов: «reserved» на складе (владелец — warehouse-сервис; дублируем
+        # здесь идемпотентно, т.к. business-logic пишет в reserved при создании заказа).
+        await conn.execute(text("ALTER TABLE warehouse_components ADD COLUMN IF NOT EXISTS reserved NUMERIC(15,3) DEFAULT 0"))
     yield
     await engine.dispose()
 

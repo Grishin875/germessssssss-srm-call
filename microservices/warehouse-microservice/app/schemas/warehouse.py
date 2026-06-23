@@ -284,3 +284,14 @@ class FromShortageRequest(BaseModel):
     supplier_id: Optional[int] = None
     order_ref: Optional[str] = None
     note: Optional[str] = None
+
+
+# ── Заявки на компоненты (брак / дозапрос со склада) ──────────────────────────
+
+class ComponentRequestCreate(BaseModel):
+    order_id: int
+    stage_id: Optional[int] = None
+    component_name: str
+    qty: float
+    reason: Optional[str] = "брак"
+    comment: Optional[str] = None

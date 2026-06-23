@@ -96,5 +96,82 @@ async def update_order_status(db, order_id: int) -> bool:
             text("UPDATE orders SET status = :s, updated_at = NOW() WHERE id = :id"),
             {"s": new_status, "id": order_id},
         )
+        # Заказ завершён (любым путём: отгрузка/ОТК/СЦ) → списываем резерв компонентов со склада
+        if new_status in ("Завершен", "Завершён"):
+            await consume_order_reserve(db, order_id)
         return True
     return False
+
+
+async def consume_order_reserve(db, order_id: int) -> int:
+    """Превратить резерв компонентов заказа в фактическое списание (stock −q, reserved −q).
+    Вызывается при завершении/отгрузке заказа. Идемпотентно (метит списания ORDER-CONSUME-*);
+    пропускается, если резерв уже снят возвратом (ORDER-RETURN-*). Обрабатывает только новые
+    брони (operation_type='RESERVE'); у legacy-заказов сток списан при создании (WRITEOFF) —
+    их строки пропускаются, повторного списания нет. Возвращает число обработанных позиций."""
+    already = (await db.execute(text(
+        "SELECT 1 FROM operations WHERE operation_id LIKE :c OR operation_id LIKE :r LIMIT 1"
+    ), {"c": f"ORDER-CONSUME-{order_id}-%", "r": f"ORDER-RETURN-{order_id}-%"})).scalar()
+    if already:
+        return 0
+    reserved = (await db.execute(text(
+        "SELECT component_name, quantity FROM operations "
+        "WHERE operation_id LIKE :p AND operation_type = 'RESERVE'"
+    ), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
+    consumed = 0
+    for idx, r in enumerate(reserved):
+        if not r["quantity"]:
+            continue
+        await db.execute(text(
+            "UPDATE warehouse_components "
+            "SET stock = GREATEST(COALESCE(stock,0) - :q, 0), "
+            "    reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
+            "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+        ), {"q": r["quantity"], "n": r["component_name"]})
+        await db.execute(text(
+            "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+            "VALUES ('WRITEOFF', :cn, :q, :note, :oid)"
+        ), {"cn": r["component_name"], "q": r["quantity"],
+            "note": f"Списание по завершении заказа #{order_id}",
+            "oid": f"ORDER-CONSUME-{order_id}-{idx}"})
+        consumed += 1
+    return consumed
+
+
+async def release_order_reserve(db, order_id: int) -> int:
+    """Снять резерв компонентов заказа (при отмене). Идемпотентно (метит ORDER-RETURN-*);
+    пропускается, если резерв уже списан (ORDER-CONSUME-*). Для новых броней (RESERVE) снимает
+    бронь (reserved −q); для legacy (WRITEOFF, сток был уменьшен при создании) возвращает сток
+    (+q). Возвращает число обработанных позиций."""
+    already = (await db.execute(text(
+        "SELECT 1 FROM operations WHERE operation_id LIKE :p OR operation_id LIKE :c LIMIT 1"
+    ), {"p": f"ORDER-RETURN-{order_id}-%", "c": f"ORDER-CONSUME-{order_id}-%"})).scalar()
+    if already:
+        return 0
+    reserved = (await db.execute(text(
+        "SELECT component_name, quantity, operation_type FROM operations "
+        "WHERE operation_id LIKE :p AND operation_type IN ('RESERVE', 'WRITEOFF')"
+    ), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
+    released = 0
+    for idx, r in enumerate(reserved):
+        if not r["quantity"]:
+            continue
+        if r["operation_type"] == "RESERVE":
+            await db.execute(text(
+                "UPDATE warehouse_components SET reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
+                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+            ), {"q": r["quantity"], "n": r["component_name"]})
+            note = f"Снятие резерва отменённого заказа #{order_id}"
+        else:
+            await db.execute(text(
+                "UPDATE warehouse_components SET stock = COALESCE(stock,0) + :q "
+                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+            ), {"q": r["quantity"], "n": r["component_name"]})
+            note = f"Возврат резерва отменённого заказа #{order_id}"
+        await db.execute(text(
+            "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+            "VALUES ('RESERVE_RELEASE', :cn, :q, :note, :oid)"
+        ), {"cn": r["component_name"], "q": r["quantity"], "note": note,
+            "oid": f"ORDER-RETURN-{order_id}-{idx}"})
+        released += 1
+    return released

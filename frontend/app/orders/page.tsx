@@ -114,7 +114,8 @@ export default function OrdersPage() {
   }
 
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" });
+  const [form, setForm] = useState({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" });
+  const [positions, setPositions] = useState<{ name: string; qty: string }[]>([]);
   const [managers, setManagers] = useState<string[]>([]);
   const [stageAssignments, setStageAssignments] = useState<Record<number, string>>({});
   const [skippedStages, setSkippedStages] = useState<Set<number>>(new Set());
@@ -181,6 +182,19 @@ export default function OrdersPage() {
     api.getSystemRoles().then(r => setSystemRoles(r.filter(x => x.is_active))).catch(console.error);
     api.getCustomFieldDefs().then(setCustomFieldDefs).catch(console.error);
   }, [user]);
+
+  // Открытие модалки создания заказа по ?create=1
+  const createParamHandled = useRef(false);
+  useEffect(() => {
+    if (createParamHandled.current) return;
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("create") !== "1") return;
+    if (!hasPermission("orders.create")) return;
+    createParamHandled.current = true;
+    setShowCreate(true); setError("");
+    setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
+    setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
+  }, [hasPermission]);
 
   // Перезагрузка при изменении фильтра по кастомному полю (серверный фильтр)
   useEffect(() => {
@@ -268,9 +282,17 @@ export default function OrdersPage() {
           components: s.components ?? [],
         }));
       }
+      // Комплектация — позиции (название + кол-во); пустые по имени отбрасываем
+      const cleanPositions = positions
+        .map(p => {
+          const n = Number(p.qty);
+          return { name: p.name.trim(), qty: p.qty === "" || isNaN(n) ? null : Math.round(n) };
+        })
+        .filter(p => p.name);
+      if (cleanPositions.length > 0) payload.positions = cleanPositions;
       await api.createOrder(payload as Partial<Order>);
       setShowCreate(false);
-      setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" }); setManagers([]);
+      setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
       setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
       setUseCanonical(false); setCanonFlags({ needs_smd: true, is_receiver: false, needs_assembly: true });
       load();
@@ -553,7 +575,7 @@ export default function OrdersPage() {
           {hasPermission("orders.create") && (
             <Button onClick={() => {
               setShowCreate(true); setError("");
-              setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "" }); setManagers([]);
+              setForm({ product_name: "", planned_qty: "", priority: "Обычный", deadline: "", comment: "", assigned_department: "", received_date: "", shipment_date: "" }); setManagers([]); setPositions([]);
               setStageAssignments({}); setProductStages([]); setProductRole(null); setExtraStages([]); setSkippedStages(new Set());
             }}>{t("orders.create")}</Button>
           )}
@@ -888,6 +910,44 @@ export default function OrdersPage() {
           <div>
             <label>Срок выполнения</label>
             <input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} />
+          </div>
+
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label>Дата получения</label>
+              <input type="date" value={form.received_date || ""} onChange={e => setForm(f => ({ ...f, received_date: e.target.value }))} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Дата отправки</label>
+              <input type="date" value={form.shipment_date || ""} onChange={e => setForm(f => ({ ...f, shipment_date: e.target.value }))} />
+            </div>
+          </div>
+
+          {/* Комплект — несколько позиций. Попадают в Excel-файл заказа. */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.8 }}>
+                Комплект — позиции {positions.length > 0 && <span style={{ fontWeight: 400 }}>· {positions.length}</span>}
+              </span>
+              <Button size="sm" variant="ghost" onClick={() => setPositions(p => [...p, { name: "", qty: "" }])}>+ Позиция</Button>
+            </div>
+            {positions.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Нет позиций. Нажмите «+ Позиция», чтобы добавить содержимое комплекта.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {positions.map((p, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", width: 18, textAlign: "right" }}>{i + 1}</span>
+                    <input style={{ flex: 1 }} placeholder="Наименование позиции" value={p.name}
+                      onChange={e => setPositions(arr => arr.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+                    <input style={{ width: 90 }} type="number" min="0" placeholder="Кол-во" value={p.qty}
+                      onChange={e => setPositions(arr => arr.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
+                    <button onClick={() => setPositions(arr => arr.filter((_, j) => j !== i))}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16 }} title="Удалить позицию">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div>

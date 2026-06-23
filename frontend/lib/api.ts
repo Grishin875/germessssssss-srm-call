@@ -226,6 +226,20 @@ export const api = {
     return request<PurchaseRequest>("/api/warehouse/purchase-requests/from-shortage", { method: "POST", body: JSON.stringify(data) });
   },
 
+  // ── Заявки на компоненты (брак/порча в производстве) ──────────────────────
+  async getComponentRequests(status?: string) {
+    return request<ComponentRequest[]>(`/api/warehouse/component-requests${status ? "?status=" + status : ""}`);
+  },
+  async createComponentRequest(data: { order_id: number; stage_id?: number | null; component_name: string; qty: number; reason?: string; comment?: string }) {
+    return request<ComponentRequest>("/api/warehouse/component-requests", { method: "POST", body: JSON.stringify(data) });
+  },
+  async issueComponentRequest(id: number) {
+    return request<ComponentRequest>(`/api/warehouse/component-requests/${id}/issue`, { method: "POST" });
+  },
+  async rejectComponentRequest(id: number) {
+    return request<ComponentRequest>(`/api/warehouse/component-requests/${id}/reject`, { method: "POST" });
+  },
+
   // ── Orders ──────────────────────────────────────────────────────────────────
   async getOrders(status?: string, search?: string, includeStatuses?: string, cf?: { field: number; value: string }) {
     const p = new URLSearchParams();
@@ -261,6 +275,9 @@ export const api = {
   },
   async closeOrder(id: number) {
     return request<{ success: boolean; status: string }>(`/api/orders/${id}/close`, { method: "POST" });
+  },
+  async releaseComponents(id: number) {
+    return request<{ success: boolean; message: string; missing?: { name: string; required: number; available: number }[] }>(`/api/orders/${id}/release-components`, { method: "POST" });
   },
   async calculateOrderDemand(productName: string, plannedQty: number, productionType?: string) {
     return request<OrderDemandResult>("/api/recipes/calculate-order-demand", {
@@ -887,6 +904,24 @@ export interface Component {
   source?: string;
 }
 
+export interface ComponentRequest {
+  id: number;
+  order_id: number;
+  stage_id?: number | null;
+  component_name: string;
+  qty: number;
+  reason: string;
+  status: string;           // pending | issued | rejected
+  status_label?: string;
+  requested_by?: number;
+  requested_by_name?: string;
+  issued_by?: number | null;
+  issued_by_name?: string | null;
+  comment?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
 export interface Warehouse {
   id: number;
   code: string;
@@ -1030,10 +1065,18 @@ export interface OrdersAnalytics {
   completion_trend: { day: string; value: number }[];
 }
 
+export interface OrderPosition {
+  name: string;          // наименование позиции
+  qty?: number | null;   // количество
+}
+
 export interface Order {
   id: number;
   product_name: string;
   planned_qty: number;
+  positions?: OrderPosition[];   // комплектация — список позиций (для Excel)
+  received_date?: string;        // дата получения
+  shipment_date?: string;        // дата отправки
   actual_qty?: number;
   status: string;
   priority: string;

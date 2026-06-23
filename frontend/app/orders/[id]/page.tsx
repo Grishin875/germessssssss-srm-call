@@ -11,6 +11,7 @@ import { api, Order, Batch, OtkBatch, OrderStage, Operator, Recipe, Component, C
 import { useStageTypes } from "../../../hooks/useStageTypes";
 import { toast } from "../../../components/ui/Toast";
 import { printRouteSheet } from "../../../lib/printDoc";
+import { exportOrderExcel } from "../../../lib/excel";
 import { StageFlow } from "../../../components/ui/StageFlow";
 import { RouteTemplate } from "../../../lib/api";
 
@@ -111,6 +112,12 @@ export default function OrderDetailPage() {
   const [gateNeedsComp, setGateNeedsComp] = useState(false);
   const [gateSaving, setGateSaving] = useState(false);
 
+  // Запрос компонента со склада (брак/порча) + перепроверка компонентов
+  const [showCompReq, setShowCompReq] = useState(false);
+  const [compReqForm, setCompReqForm] = useState({ component_name: "", qty: "", comment: "" });
+  const [compReqSaving, setCompReqSaving] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+
   useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
 
   useEffect(() => {
@@ -207,6 +214,47 @@ export default function OrderDetailPage() {
       return { name: r.component_name, production_type: r.production_type, needed, available, after, ok: after >= 0 };
     });
   }, [order, allRecipes, allComponents]);
+
+  // Компоненты заказа — для выбора в заявке (имена из рецептуры заказа, иначе весь склад)
+  const orderComponentNames = useMemo(() => {
+    const names = writeoffRows.map(r => r.name).filter(Boolean);
+    return names.length ? Array.from(new Set(names)) : allComponents.map(c => c.name);
+  }, [writeoffRows, allComponents]);
+
+  async function submitComponentRequest() {
+    if (!order) return;
+    if (!compReqForm.component_name.trim() || !compReqForm.qty) { toast.warning("Укажите компонент и количество"); return; }
+    setCompReqSaving(true);
+    try {
+      await api.createComponentRequest({
+        order_id: order.id,
+        component_name: compReqForm.component_name.trim(),
+        qty: Math.max(1, Math.round(Number(compReqForm.qty) || 0)),
+        reason: "брак",
+        comment: compReqForm.comment.trim() || undefined,
+      });
+      toast.success("Заявка на компонент отправлена кладовщику");
+      setShowCompReq(false);
+      setCompReqForm({ component_name: "", qty: "", comment: "" });
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+    setCompReqSaving(false);
+  }
+
+  async function recheckComponents() {
+    if (!order) return;
+    setReleasing(true);
+    try {
+      const r = await api.releaseComponents(order.id);
+      if (r.success) {
+        toast.success(r.message || "Компоненты зарезервированы");
+        const o = await api.getOrder(id); setOrder(o);
+      } else {
+        const names = (r.missing || []).map(m => m.name).join(", ");
+        toast.warning((r.message || "Компонентов не хватает") + (names ? `: ${names}` : ""));
+      }
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+    setReleasing(false);
+  }
 
   async function confirmStart() {
     if (!order) return;
@@ -495,6 +543,11 @@ export default function OrderDetailPage() {
             </span>
           )}
           <Button variant="secondary" size="sm" style={{ marginLeft: "auto" }} onClick={() => router.push(`/chat?order=${order.id}`)}>💬 Чат заказа</Button>
+          <Button variant="secondary" size="sm" onClick={() => exportOrderExcel(order).then(() => toast.success("Excel сформирован")).catch(() => toast.error("Не удалось сформировать Excel"))}>📄 Excel</Button>
+          <Button variant="secondary" size="sm" onClick={() => { setCompReqForm({ component_name: orderComponentNames[0] || "", qty: "", comment: "" }); setShowCompReq(true); }}>🧩 Запросить компонент</Button>
+          {order.status === "Ожидает компонентов" && (
+            <Button size="sm" loading={releasing} onClick={recheckComponents}>↻ Перепроверить компоненты</Button>
+          )}
           {order.can_close && (
             <Button variant="secondary" size="sm" onClick={() => printRouteSheet({
               orderId: order.id,
@@ -575,6 +628,8 @@ export default function OrderDetailPage() {
                   ["Фактически", `${order.actual_qty ?? 0} шт`],
                   ["Приоритет", <PriorityBadge key="p" priority={order.priority} />],
                   ["Срок", order.deadline ? new Date(order.deadline).toLocaleDateString("ru") : "—"],
+                  ["Дата получения", order.received_date ? new Date(order.received_date).toLocaleDateString("ru") : "—"],
+                  ["Дата отправки", order.shipment_date ? new Date(order.shipment_date).toLocaleDateString("ru") : "—"],
                   ["Отдел", order.assigned_department || "—"],
                   ["Оператор", order.assigned_operator_name || "—"],
                   ["Создан", new Date(order.created_at).toLocaleString("ru")],
@@ -597,6 +652,31 @@ export default function OrderDetailPage() {
                 )}
               </div>
             </Card>
+
+            {order.positions && order.positions.length > 0 && (
+              <Card title="Комплектация (позиции)">
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 14 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left", width: 40 }}>№</th>
+                        <th style={{ textAlign: "left" }}>Наименование</th>
+                        <th style={{ textAlign: "right", width: 90 }}>Кол-во</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {order.positions.map((p, i) => (
+                        <tr key={i}>
+                          <td>{i + 1}</td>
+                          <td>{p.name}</td>
+                          <td style={{ textAlign: "right" }}>{p.qty ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
 
             {customFieldDefs.length > 0 && (
               <Card title="Дополнительные поля">
@@ -1451,6 +1531,43 @@ export default function OrderDetailPage() {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* Запрос компонента со склада (брак/порча) */}
+      <Modal
+        open={showCompReq}
+        onClose={() => setShowCompReq(false)}
+        title="Запрос компонента со склада (брак/порча)"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowCompReq(false)}>Отмена</Button>
+            <Button onClick={submitComponentRequest} loading={compReqSaving}>Отправить заявку</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Заявка уйдёт кладовщику. Он подтвердит выдачу — тогда компонент спишется со склада.
+          </div>
+          <div>
+            <label>Компонент</label>
+            {orderComponentNames.length > 0 ? (
+              <select value={compReqForm.component_name} onChange={e => setCompReqForm(f => ({ ...f, component_name: e.target.value }))}>
+                {orderComponentNames.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            ) : (
+              <input value={compReqForm.component_name} onChange={e => setCompReqForm(f => ({ ...f, component_name: e.target.value }))} placeholder="Название компонента" />
+            )}
+          </div>
+          <div>
+            <label>Количество</label>
+            <input type="number" min="1" value={compReqForm.qty} onChange={e => setCompReqForm(f => ({ ...f, qty: e.target.value }))} placeholder="0" />
+          </div>
+          <div>
+            <label>Комментарий</label>
+            <textarea value={compReqForm.comment} onChange={e => setCompReqForm(f => ({ ...f, comment: e.target.value }))} rows={2} placeholder="Что случилось (необязательно)" />
+          </div>
+        </div>
       </Modal>
     </AppLayout>
   );

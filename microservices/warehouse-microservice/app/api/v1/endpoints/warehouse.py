@@ -8,6 +8,7 @@ from app.schemas.warehouse import (
     WarehouseCreate, WarehouseUpdate, WarehouseOut, WarehouseStockOut, StockTransferRequest,
     SupplierCreate, SupplierUpdate, SupplierOut,
     PurchaseRequestCreate, PurchaseRequestUpdate, PurchaseRequestOut, FromShortageRequest,
+    ComponentRequestCreate,
 )
 from app.services import warehouse_service
 
@@ -330,6 +331,52 @@ async def delete_purchase_request(pid: int, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True}
+
+
+# ── Заявки на компоненты (брак / дозапрос) ────────────────────────────────────
+
+@router.post("/component-requests")
+async def create_component_request(body: ComponentRequestCreate, request: Request):
+    """Создать заявку на компонент (брак). Доступно любому авторизованному оператору."""
+    user = _user(request)
+    try:
+        return await warehouse_service.create_component_request(
+            _db(request), body,
+            user_id=getattr(user, "id", None),
+            user_name=getattr(user, "username", None),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/component-requests")
+async def list_component_requests(request: Request, status: Optional[str] = None):
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.list_component_requests(_db(request), status=status)
+
+
+@router.post("/component-requests/{req_id}/issue")
+async def issue_component_request(req_id: int, request: Request):
+    user = _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.issue_component_request(
+            _db(request), req_id,
+            user_id=getattr(user, "id", None),
+            user_name=getattr(user, "username", None),
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/component-requests/{req_id}/reject")
+async def reject_component_request(req_id: int, request: Request):
+    _require_perm(request, "warehouse.edit")
+    try:
+        return await warehouse_service.reject_component_request(_db(request), req_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────

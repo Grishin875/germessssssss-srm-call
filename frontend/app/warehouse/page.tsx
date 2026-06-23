@@ -6,7 +6,7 @@ import { AppLayout } from "../../components/layout/AppLayout";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import { api, Component, Case, FinishedGood, Warehouse, WarehouseStockRow } from "../../lib/api";
+import { api, Component, Case, FinishedGood, Warehouse, WarehouseStockRow, ComponentRequest } from "../../lib/api";
 import { exportToExcel, parseExcelFile, Row as ExcelRow } from "../../lib/excel";
 import { toast } from "../../components/ui/Toast";
 
@@ -54,8 +54,15 @@ const TABS = [
   { key: "warehouses",     label: "Склады" },
   { key: "cases",          label: "Корпуса" },
   { key: "finished_goods", label: "Готовая продукция" },
+  { key: "requests",       label: "Заявки (брак)" },
   { key: "analytics",      label: "Аналитика" },
 ];
+
+const REQ_STATUS_META: Record<string, { label: string; color: string }> = {
+  pending:  { label: "Ожидает",  color: "#f59e0b" },
+  issued:   { label: "Выдано",   color: "#10b981" },
+  rejected: { label: "Отклонено", color: "#ef4444" },
+};
 
 const WH_TYPE_META: Record<string, { label: string; color: string }> = {
   main:     { label: "Основной",          color: "#0ea5e9" },
@@ -69,7 +76,7 @@ export default function WarehousePage() {
   const { user, loading, hasPermission } = useAuth();
   const router = useRouter();
 
-  const [tab, setTab] = useState<"components" | "warehouses" | "cases" | "finished_goods" | "analytics">("components");
+  const [tab, setTab] = useState<"components" | "warehouses" | "cases" | "finished_goods" | "requests" | "analytics">("components");
 
   // ── Components state ──────────────────────────────────────────────────────
   const [components, setComponents] = useState<Component[]>([]);
@@ -106,6 +113,10 @@ export default function WarehousePage() {
   // ── Finished Goods state ──────────────────────────────────────────────────
   const [finishedGoods, setFinishedGoods] = useState<FinishedGood[]>([]);
   const [fgLoading, setFgLoading] = useState(false);
+
+  // ── Component requests (брак) state ───────────────────────────────────────
+  const [compRequests, setCompRequests] = useState<ComponentRequest[]>([]);
+  const [reqLoading, setReqLoading] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [historyComp, setHistoryComp] = useState<Component | null>(null);
@@ -144,12 +155,36 @@ export default function WarehousePage() {
     api.getCategories().then(setCategories).catch(console.error);
     loadCases();
     loadFinishedGoods();
+    loadCompRequests();
   }, [user]);
 
   async function loadFinishedGoods() {
     setFgLoading(true);
     try { setFinishedGoods(await api.getFinishedGoods()); } catch {}
     setFgLoading(false);
+  }
+
+  async function loadCompRequests() {
+    setReqLoading(true);
+    try { setCompRequests(await api.getComponentRequests()); } catch {}
+    setReqLoading(false);
+  }
+
+  async function issueRequest(id: number) {
+    try {
+      await api.issueComponentRequest(id);
+      toast.success("Компонент выдан, списан со склада");
+      loadCompRequests();
+      loadComponents();
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
+
+  async function rejectRequest(id: number) {
+    try {
+      await api.rejectComponentRequest(id);
+      toast.success("Заявка отклонена");
+      loadCompRequests();
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
   }
 
   async function loadComponents() {
@@ -426,7 +461,7 @@ export default function WarehousePage() {
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, background: "var(--bg-secondary)", padding: 4, borderRadius: 10, width: "fit-content" }}>
           {TABS.map(t => (
-            <button key={t.key} style={tabStyle(t.key)} onClick={() => setTab(t.key as "components" | "warehouses" | "cases" | "finished_goods" | "analytics")}>
+            <button key={t.key} style={tabStyle(t.key)} onClick={() => setTab(t.key as "components" | "warehouses" | "cases" | "finished_goods" | "requests" | "analytics")}>
               {t.label}
             </button>
           ))}
@@ -458,7 +493,7 @@ export default function WarehousePage() {
                   <table>
                     <thead>
                       <tr>
-                        {["Название","Категория","Источник","Остаток","Мин. остаток","Ед.","Блок",""].map(h => (
+                        {["Название","Категория","Источник","Остаток","Резерв","Доступно","Мин. остаток","Ед.","Блок",""].map(h => (
                           <th key={h}>{h}</th>
                         ))}
                       </tr>
@@ -472,6 +507,8 @@ export default function WarehousePage() {
                             <td>{c.category}</td>
                             <td><SourceBadge source={c.source} /></td>
                             <td style={{ fontWeight: 600, color: low ? "#d97706" : undefined }}>{c.stock}</td>
+                            <td style={{ color: c.reserved_qty ? "#f59e0b" : "var(--text-muted)" }}>{c.reserved_qty || "—"}</td>
+                            <td style={{ fontWeight: 600 }}>{c.available}</td>
                             <td>{c.min_stock ?? "—"}</td>
                             <td>{c.unit || "—"}</td>
                             <td>{c.block}</td>
@@ -748,6 +785,74 @@ export default function WarehousePage() {
                     <div style={{ fontSize: 12, color: "#6366f1", fontWeight: 600, marginTop: 2 }}>Наименований</div>
                   </div>
                 </div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* ── Component Requests Tab (брак) ──────────────────────────────────── */}
+        {tab === "requests" && (
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>Заявки на компоненты (брак)</div>
+              <button onClick={loadCompRequests} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                <svg width={13} height={13} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Обновить
+              </button>
+            </div>
+            {reqLoading ? (
+              <div className="text-center py-12">Загрузка...</div>
+            ) : compRequests.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>Заявок нет</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table>
+                  <thead>
+                    <tr>
+                      {["Дата","Заказ","Компонент","Кол-во","Причина","Запросил","Статус",""].map(h => (
+                        <th key={h}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {compRequests.map(r => {
+                      const meta = REQ_STATUS_META[r.status] ?? { label: r.status_label || r.status, color: "var(--text-muted)" };
+                      return (
+                        <tr key={r.id}>
+                          <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>{r.created_at ? new Date(r.created_at).toLocaleString("ru") : "—"}</td>
+                          <td>
+                            <button
+                              onClick={() => router.push(`/orders/${r.order_id}`)}
+                              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", padding: 0, fontWeight: 600 }}
+                            >#{r.order_id}</button>
+                          </td>
+                          <td style={{ fontWeight: 500 }}>{r.component_name}</td>
+                          <td style={{ fontWeight: 600 }}>{r.qty}</td>
+                          <td style={{ maxWidth: 240, color: "var(--text-secondary)" }}>{r.reason || "—"}</td>
+                          <td>{r.requested_by_name || "—"}</td>
+                          <td>
+                            <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: meta.color + "22", color: meta.color }}>
+                              {r.status_label || meta.label}
+                            </span>
+                            {r.status === "issued" && r.issued_by_name && (
+                              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Выдал: {r.issued_by_name}</div>
+                            )}
+                          </td>
+                          <td>
+                            {r.status === "pending" && hasPermission("warehouse.edit") && (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <Button variant="success" size="sm" onClick={() => issueRequest(r.id)}>Выдать</Button>
+                                <Button variant="danger" size="sm" onClick={() => rejectRequest(r.id)}>Отклонить</Button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </Card>

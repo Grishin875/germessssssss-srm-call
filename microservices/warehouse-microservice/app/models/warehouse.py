@@ -68,6 +68,7 @@ class WarehouseComponent(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True, nullable=False)
     stock = Column(Numeric(15, 3), default=0)
+    reserved = Column(Numeric(15, 3), default=0)   # зарезервировано под заказы; available = stock - reserved
     category = Column(String(100), default="Разное")
     unit = Column(String(50))
     min_stock = Column(Numeric(15, 3))
@@ -177,3 +178,35 @@ class PurchaseRequestItem(Base):
     received_qty = Column(Numeric(15, 3), default=0)
     unit_price = Column(Numeric(15, 2))
     note = Column(Text)
+
+
+# ── Заявки на компоненты (брак / дозапрос со склада) ──────────────────────────
+COMPONENT_REQUEST_STATUSES = ("pending", "issued", "rejected")
+COMPONENT_REQUEST_STATUS_LABELS = {
+    "pending":  "Ожидает",
+    "issued":   "Выдано",
+    "rejected": "Отклонено",
+}
+
+
+class ComponentRequest(Base):
+    """Заявка оператора на дополнительный компонент (как правило — брак).
+
+    Создаётся оператором без склад-прав; склад выдаёт (issue) или отклоняет
+    (reject). При выдаче списывается остаток warehouse_components."""
+    __tablename__ = "component_requests"
+
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer)
+    stage_id = Column(Integer)
+    component_name = Column(String(500), nullable=False)
+    qty = Column(Numeric(15, 3))
+    reason = Column(String(200), default="брак")
+    status = Column(String(50), default="pending")   # pending | issued | rejected
+    requested_by = Column(Integer)
+    requested_by_name = Column(String(200))
+    issued_by = Column(Integer)
+    issued_by_name = Column(String(200))
+    comment = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

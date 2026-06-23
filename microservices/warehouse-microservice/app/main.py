@@ -8,7 +8,7 @@ from shared.core.database import make_engine, make_session_factory, Base
 from shared.core.security import decode_token
 from app.models.warehouse import (  # noqa
     WarehouseComponent, ProductionStock, Operation, Case, Warehouse, WarehouseStock,
-    Supplier, PurchaseRequest, PurchaseRequestItem,
+    Supplier, PurchaseRequest, PurchaseRequestItem, ComponentRequest,
 )
 
 engine = make_engine(settings.DATABASE_URL)
@@ -19,6 +19,11 @@ session_factory = make_session_factory(engine)
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Идемпотентные миграции
+        from sqlalchemy import text
+        await conn.execute(text(
+            "ALTER TABLE warehouse_components ADD COLUMN IF NOT EXISTS reserved NUMERIC(15,3) DEFAULT 0"
+        ))
     # Завести дефолтные склады + разложить текущие остатки по Основному складу
     from app.services import warehouse_service
     async with session_factory() as session:

@@ -76,7 +76,7 @@ export default function AssemblyPage() {
     if (!b.order_id) return;
     setOtkSubmitting(b.batch_id);
     try {
-      await api.updateOrder(b.order_id, { status: "На проверке ОТК" });
+      await api.submitOtk(b.order_id);
       load();
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
     setOtkSubmitting(null);

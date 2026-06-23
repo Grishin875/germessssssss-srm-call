@@ -236,9 +236,18 @@ class ExtraStage(BaseModel):
     components: Optional[List[str]] = []  # имена комплектующих для этапа
 
 
+class Position(BaseModel):
+    """Позиция комплектации заказа (для Excel-документа)."""
+    name: str
+    qty: Optional[int] = None
+
+
 class OrderCreate(BaseModel):
     product_name: str
     planned_qty: int
+    positions: Optional[List[Position]] = None   # комплектация — список позиций для Excel
+    received_date: Optional[str] = None          # дата получения
+    shipment_date: Optional[str] = None          # дата отправки
     assigned_operator_id: Optional[str] = None
     priority: str = "Обычный"
     deadline: Optional[str] = None
@@ -268,6 +277,9 @@ class OrderUpdate(BaseModel):
     otk_comment: Optional[str] = None
     tags: Optional[str] = None
     managers: Optional[List[str]] = None    # id руководителей проекта
+    positions: Optional[List[Position]] = None   # комплектация — список позиций для Excel
+    received_date: Optional[str] = None          # дата получения
+    shipment_date: Optional[str] = None          # дата отправки
 
 
 class SubmitOtkRequest(BaseModel):
@@ -353,6 +365,10 @@ async def list_orders(request: Request, status: Optional[str] = None,
     rows = []
     for o in orders:
         d = _m(o)
+        try:
+            d["positions"] = json.loads(o.positions) if o.positions else []
+        except Exception:
+            d["positions"] = []
         d["assigned_operator_name"] = op_names.get(o.assigned_operator_id) if o.assigned_operator_id else None
         d["managers"] = _order_managers(o)
         pr = progress.get(o.id, {"total": 0, "done": 0})
@@ -589,6 +605,10 @@ async def get_order(order_id: int, request: Request):
     if not order:
         raise HTTPException(404, "Заказ не найден")
     d = _m(order)
+    try:
+        d["positions"] = json.loads(order.positions) if order.positions else []
+    except Exception:
+        d["positions"] = []
     mgr_ids = _order_managers(order)
     d["managers"] = mgr_ids
     d["manager_names"] = []
@@ -625,14 +645,15 @@ async def create_order(body: OrderCreate, request: Request):
     can_produce = True
     missing_components = []
     for key, d in demand.items():
-        stock_val = (await db.execute(text(
-            "SELECT COALESCE(stock, 0) FROM warehouse_components WHERE LOWER(TRIM(name))=:n"
+        # Доступно = остаток − уже зарезервированное под другие заказы
+        avail_val = (await db.execute(text(
+            "SELECT COALESCE(stock,0) - COALESCE(reserved,0) FROM warehouse_components WHERE LOWER(TRIM(name))=:n"
         ), {"n": key})).scalar_one_or_none()
-        stock = float(stock_val) if stock_val is not None else 0.0
-        if stock < d["required"]:
+        available = float(avail_val) if avail_val is not None else 0.0
+        if available < d["required"]:
             can_produce = False
             missing_components.append({
-                "name": d["name"], "required": d["required"], "available": stock
+                "name": d["name"], "required": d["required"], "available": available
             })
 
     initial_status = "Создан" if can_produce else "Ожидает компонентов"
@@ -645,6 +666,8 @@ async def create_order(body: OrderCreate, request: Request):
         assigned_department=body.assigned_department,
         skipped_stage_ids=json.dumps(list(skipped_ids)) if skipped_ids else None,
         managers=json.dumps([str(m) for m in body.managers]) if body.managers else None,
+        positions=json.dumps([p.model_dump() for p in body.positions], ensure_ascii=False) if body.positions else None,
+        received_date=body.received_date, shipment_date=body.shipment_date,
     )
     db.add(order)
     await db.flush()
@@ -773,24 +796,24 @@ async def create_order(body: OrderCreate, request: Request):
             )
             initial_status = "В работе"
 
-    # ── Списываем компоненты если всё есть ──────────────────────────────────
+    # ── Резервируем компоненты если всё есть (физически на складе; уменьшается «доступно») ──
     if can_produce and demand:
         op_prefix = f"ORDER-RESERVE-{order.id}"
         for idx, (key, d) in enumerate(demand.items()):
-            # Guard stock >= qty: параллельный заказ мог уже списать остаток
+            # Guard available (stock-reserved) >= qty: параллельный заказ мог уже занять остаток
             res = await db.execute(text(
-                "UPDATE warehouse_components SET stock=stock-:qty "
-                "WHERE LOWER(TRIM(name))=:n AND stock >= :qty"
+                "UPDATE warehouse_components SET reserved=COALESCE(reserved,0)+:qty "
+                "WHERE LOWER(TRIM(name))=:n AND COALESCE(stock,0) - COALESCE(reserved,0) >= :qty"
             ), {"qty": d["required"], "n": key})
             if res.rowcount == 0:
                 raise HTTPException(
                     409, f"Компонент «{d['name']}» закончился на складе во время оформления заказа")
             await db.execute(text("""
                 INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-                VALUES ('WRITEOFF', :cn, :qty, :note, :oid)
+                VALUES ('RESERVE', :cn, :qty, :note, :oid)
             """), {
                 "cn": d["name"], "qty": d["required"],
-                "note": f"Резервирование под заказ #{order.id} / {body.product_name}",
+                "note": f"Резерв под заказ #{order.id} / {body.product_name}",
                 "oid": f"{op_prefix}-{idx}",
             })
 
@@ -852,6 +875,9 @@ async def update_order(order_id: int, body: OrderUpdate, request: Request):
     # managers приходит списком — храним JSON-строкой в колонке Text
     if "managers" in update_data:
         update_data["managers"] = json.dumps([str(m) for m in (update_data["managers"] or [])])
+    # positions приходит списком позиций — храним JSON-строкой в колонке Text
+    if "positions" in update_data:
+        update_data["positions"] = json.dumps(update_data["positions"] or [], ensure_ascii=False)
     await db.execute(
         update(Order)
         .where(Order.id == order_id)
@@ -867,6 +893,11 @@ async def update_order(order_id: int, body: OrderUpdate, request: Request):
     elif update_data:
         await _audit(db, u, "order", order_id, "updated",
                      details=json.dumps(list(update_data.keys()), ensure_ascii=False))
+    # Резерв компонентов: при завершении заказа — списать со склада, при отмене — снять резерв
+    if update_data.get("status") in CLOSING_STATUSES:
+        await _consume_reserved_components(db, order_id)
+    elif update_data.get("status") in ("Отменен", "Отменён"):
+        await _return_reserved_components(db, order_id)
     await db.commit()
     result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.scalar_one()
@@ -897,6 +928,8 @@ async def close_order(order_id: int, request: Request):
         update(Order).where(Order.id == order_id)
         .values(status="Завершен", updated_at=func.now())
     )
+    # Заказ завершён → превращаем резерв компонентов в фактическое списание со склада
+    await _consume_reserved_components(db, order_id)
     await _audit(db, u, "order", order_id, "closed", old_value=old_status, new_value="Завершен")
     await _fire_webhooks(db, "order.status_changed", {
         "order_id": order_id, "product_name": order.product_name,
@@ -907,37 +940,85 @@ async def close_order(order_id: int, request: Request):
 
 
 async def _return_reserved_components(db, order_id: int) -> int:
-    """Вернуть на склад компоненты, списанные под заказ (резерв), если возврат ещё не делался.
-    Идемпотентно: помечает операции возврата как ORDER-RETURN-{order_id}-*.
-    Возвращает число возвращённых позиций."""
-    # Уже возвращали?
+    """Снять резерв компонентов под заказ (при отмене), если ещё не снимали и не списывали.
+    Идемпотентно: помечает снятие как ORDER-RETURN-{order_id}-*; пропускается, если резерв
+    уже превращён в списание (ORDER-CONSUME-*).
+    Поддержка legacy: для старых заказов резерв был сразу WRITEOFF (сток уже уменьшен) —
+    тогда возвращаем сток (+q); для новых (RESERVE) — просто снимаем бронь (reserved −q).
+    Возвращает число обработанных позиций."""
     already = (await db.execute(text(
-        "SELECT 1 FROM operations WHERE operation_id LIKE :p LIMIT 1"
-    ), {"p": f"ORDER-RETURN-{order_id}-%"})).scalar_one_or_none()
+        "SELECT 1 FROM operations WHERE operation_id LIKE :p OR operation_id LIKE :c LIMIT 1"
+    ), {"p": f"ORDER-RETURN-{order_id}-%", "c": f"ORDER-CONSUME-{order_id}-%"})).scalar_one_or_none()
     if already:
         return 0
-    # Что было списано под заказ
     reserved = (await db.execute(text("""
-        SELECT component_name, quantity FROM operations
-        WHERE operation_id LIKE :p AND operation_type = 'WRITEOFF'
+        SELECT component_name, quantity, operation_type FROM operations
+        WHERE operation_id LIKE :p AND operation_type IN ('RESERVE', 'WRITEOFF')
     """), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
     returned = 0
     for idx, r in enumerate(reserved):
         if not r["quantity"]:
             continue
-        await db.execute(text(
-            "UPDATE warehouse_components SET stock = stock + :q WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
-        ), {"q": r["quantity"], "n": r["component_name"]})
+        if r["operation_type"] == "RESERVE":
+            # Новая модель: сток не трогали — снимаем только бронь
+            await db.execute(text(
+                "UPDATE warehouse_components SET reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
+                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+            ), {"q": r["quantity"], "n": r["component_name"]})
+            note = f"Снятие резерва отменённого заказа #{order_id}"
+        else:
+            # Legacy: сток был уменьшен при создании — возвращаем на склад
+            await db.execute(text(
+                "UPDATE warehouse_components SET stock = COALESCE(stock,0) + :q "
+                "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+            ), {"q": r["quantity"], "n": r["component_name"]})
+            note = f"Возврат резерва отменённого заказа #{order_id}"
         await db.execute(text("""
             INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-            VALUES ('RECEIVE', :cn, :q, :note, :oid)
+            VALUES ('RESERVE_RELEASE', :cn, :q, :note, :oid)
         """), {
             "cn": r["component_name"], "q": r["quantity"],
-            "note": f"Возврат резерва отменённого заказа #{order_id}",
-            "oid": f"ORDER-RETURN-{order_id}-{idx}",
+            "note": note, "oid": f"ORDER-RETURN-{order_id}-{idx}",
         })
         returned += 1
     return returned
+
+
+async def _consume_reserved_components(db, order_id: int) -> int:
+    """Превратить резерв компонентов заказа в фактическое списание (stock −q, reserved −q).
+    Вызывается при завершении/отгрузке заказа. Идемпотентно: помечает списания как
+    ORDER-CONSUME-{order_id}-*; пропускается, если резерв уже снят возвратом (ORDER-RETURN-*).
+    Обрабатывает только новые брони (operation_type='RESERVE'); у legacy-заказов сток уже
+    был списан при создании, поэтому их строки (WRITEOFF) пропускаются — повторного списания нет."""
+    already = (await db.execute(text(
+        "SELECT 1 FROM operations WHERE operation_id LIKE :c OR operation_id LIKE :r LIMIT 1"
+    ), {"c": f"ORDER-CONSUME-{order_id}-%", "r": f"ORDER-RETURN-{order_id}-%"})).scalar_one_or_none()
+    if already:
+        return 0
+    reserved = (await db.execute(text("""
+        SELECT component_name, quantity FROM operations
+        WHERE operation_id LIKE :p AND operation_type = 'RESERVE'
+    """), {"p": f"ORDER-RESERVE-{order_id}-%"})).mappings().all()
+    consumed = 0
+    for idx, r in enumerate(reserved):
+        if not r["quantity"]:
+            continue
+        await db.execute(text(
+            "UPDATE warehouse_components "
+            "SET stock = GREATEST(COALESCE(stock,0) - :q, 0), "
+            "    reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
+            "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+        ), {"q": r["quantity"], "n": r["component_name"]})
+        await db.execute(text("""
+            INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
+            VALUES ('WRITEOFF', :cn, :q, :note, :oid)
+        """), {
+            "cn": r["component_name"], "q": r["quantity"],
+            "note": f"Списание по завершении заказа #{order_id}",
+            "oid": f"ORDER-CONSUME-{order_id}-{idx}",
+        })
+        consumed += 1
+    return consumed
 
 
 @router.delete("/orders/{order_id}")
@@ -945,7 +1026,7 @@ async def cancel_order(order_id: int, request: Request):
     u = _perm(request, "orders.delete")
     db = _db(request)
     old = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
-    if old and old.status in ("Завершен", "Отменен"):
+    if old and old.status in ("Завершен", "Завершён", "Отменен", "Отменён"):
         raise HTTPException(400, f"Заказ уже в терминальном статусе «{old.status}»")
     await db.execute(
         update(Order).where(Order.id == order_id)
@@ -979,7 +1060,7 @@ async def cancel_order(order_id: int, request: Request):
 
 @router.post("/orders/{order_id}/release-components")
 async def release_order_from_waiting(order_id: int, request: Request):
-    """Проверить наличие компонентов и перевести заказ из 'Ожидает компонентов' → 'Создан' (списав со склада)."""
+    """Проверить наличие компонентов и перевести заказ из 'Ожидает компонентов' → 'Создан' (зарезервировав на складе)."""
     _perm(request, "orders.edit")
     db = _db(request)
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
@@ -1002,12 +1083,12 @@ async def release_order_from_waiting(order_id: int, request: Request):
 
     missing = []
     for key, d in demand.items():
-        stock_val = (await db.execute(text(
-            "SELECT COALESCE(stock, 0) FROM warehouse_components WHERE LOWER(TRIM(name))=:n"
+        avail_val = (await db.execute(text(
+            "SELECT COALESCE(stock,0) - COALESCE(reserved,0) FROM warehouse_components WHERE LOWER(TRIM(name))=:n"
         ), {"n": key})).scalar_one_or_none()
-        stock = float(stock_val) if stock_val is not None else 0.0
-        if stock < d["required"]:
-            missing.append({"name": d["name"], "required": d["required"], "available": stock})
+        available = float(avail_val) if avail_val is not None else 0.0
+        if available < d["required"]:
+            missing.append({"name": d["name"], "required": d["required"], "available": available})
 
     if missing:
         return {"success": False, "message": "Компонентов всё ещё не хватает", "missing": missing}
@@ -1022,24 +1103,24 @@ async def release_order_from_waiting(order_id: int, request: Request):
 
     op_prefix = f"ORDER-RESERVE-{order_id}"
     for idx, (key, d) in enumerate(demand.items()):
-        # Guard stock >= qty: параллельный заказ мог уже списать остаток
+        # Guard available (stock-reserved) >= qty: параллельный заказ мог уже занять остаток
         res = await db.execute(text(
-            "UPDATE warehouse_components SET stock=stock-:qty "
-            "WHERE LOWER(TRIM(name))=:n AND stock >= :qty"
+            "UPDATE warehouse_components SET reserved=COALESCE(reserved,0)+:qty "
+            "WHERE LOWER(TRIM(name))=:n AND COALESCE(stock,0) - COALESCE(reserved,0) >= :qty"
         ), {"qty": d["required"], "n": key})
         if res.rowcount == 0:
             raise HTTPException(
                 409, f"Компонент «{d['name']}» закончился на складе во время оформления")
         await db.execute(text("""
             INSERT INTO operations (operation_type, component_name, quantity, note, operation_id)
-            VALUES ('WRITEOFF', :cn, :qty, :note, :oid)
+            VALUES ('RESERVE', :cn, :qty, :note, :oid)
         """), {
             "cn": d["name"], "qty": d["required"],
-            "note": f"Резервирование под заказ #{order_id} / {order.product_name}",
+            "note": f"Резерв под заказ #{order_id} / {order.product_name}",
             "oid": f"{op_prefix}-{idx}",
         })
     await db.commit()
-    return {"success": True, "message": "Компоненты списаны, заказ переведён в 'Создан'"}
+    return {"success": True, "message": "Компоненты зарезервированы, заказ переведён в 'Создан'"}
 
 
 @router.post("/orders/{order_id}/start")
@@ -1155,12 +1236,21 @@ async def update_order_status(order_id: int, request: Request):
     status = body.get("status")
     if not status:
         raise HTTPException(400, "Статус не указан")
-    old = (await db.execute(select(Order.status).where(Order.id == order_id))).scalar_one_or_none()
+    old = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    old_status = old.status if old else None
+    # Завершить заказ может только руководитель проекта (как в PUT /orders и close)
+    if status in CLOSING_STATUSES and not _is_order_manager(u, old):
+        raise HTTPException(403, "Закрыть заказ может только руководитель проекта")
     await db.execute(
         update(Order).where(Order.id == order_id)
         .values(status=status, updated_at=func.now())
     )
-    await _audit(db, u, "order", order_id, "status_changed", old_value=old, new_value=status)
+    # Резерв компонентов: завершение → списание со склада, отмена → снятие резерва
+    if status in CLOSING_STATUSES:
+        await _consume_reserved_components(db, order_id)
+    elif status in ("Отменен", "Отменён"):
+        await _return_reserved_components(db, order_id)
+    await _audit(db, u, "order", order_id, "status_changed", old_value=old_status, new_value=status)
     await db.commit()
     return {"success": True}
 

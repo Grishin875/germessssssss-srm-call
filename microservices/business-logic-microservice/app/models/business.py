@@ -24,6 +24,9 @@ class Order(Base):
     otk_attempts = Column(Integer, default=0)     # сколько раз отправляли в ОТК
     skipped_stage_ids = Column(Text)              # JSON: id этапов рецептуры, пропущенных в этом заказе
     tags = Column(Text)                           # JSON список тегов/меток заказа
+    positions = Column(Text)                      # JSON: [{name, qty}] — комплектация (список позиций для Excel)
+    received_date = Column(String(50))            # дата получения заказа
+    shipment_date = Column(String(50))            # дата отправки заказа
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
