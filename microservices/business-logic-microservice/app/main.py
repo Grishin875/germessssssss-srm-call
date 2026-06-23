@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_order_stages_item ON order_stages(order_item_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_production_batches_item ON production_batches(order_item_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_otk_batches_item ON otk_batches(order_item_id)"))
+        # «Принять задачу»: закрепление этапа лично за исполнителем
+        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_by VARCHAR(50)"))
+        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP"))
     yield
     await engine.dispose()
 

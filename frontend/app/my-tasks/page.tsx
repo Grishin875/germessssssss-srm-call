@@ -45,10 +45,12 @@ export default function MyTasksPage() {
     setFetching(false);
   }
 
-  async function handleStart(order: MyOrder, stage: OrderStage) {
+  async function handleAccept(order: MyOrder, stage: OrderStage) {
+    // «Принять задачу» = закрепить её лично за собой и начать. После этого
+    // другой исполнитель/отдел не сможет её трогать.
     setActionId(stage.id);
     try {
-      await api.startStage(order.id, stage.id);
+      await api.acceptStage(order.id, stage.id);
       await load();
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
     setActionId(null);
@@ -231,12 +233,17 @@ export default function MyTasksPage() {
                             {/* Actions */}
                             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                               {stage.status === "pending" && (
-                                <Button size="sm" onClick={() => handleStart(order, stage)} loading={isLoading}>
-                                  Начать работу
+                                <Button size="sm" onClick={() => handleAccept(order, stage)} loading={isLoading}>
+                                  Принять задачу
                                 </Button>
                               )}
                               {stage.status === "in_progress" && (
                                 <>
+                                  {stage.accepted_by && String(stage.accepted_by) === String(user?.id) && (
+                                    <span style={{ fontSize: 12, color: "#10b981", alignSelf: "center", fontWeight: 600 }}>
+                                      ✓ Принято вами
+                                    </span>
+                                  )}
                                   {/* Кнопка передачи если нужно фиксировать */}
                                   {stage.transfer_qty === 1 && !stage.transferred_qty && (
                                     <Button

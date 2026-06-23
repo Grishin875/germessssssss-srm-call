@@ -350,6 +350,9 @@ export const api = {
   async startStage(orderId: number, stageId: number) {
     return request<OrderStage>(`/api/orders/${orderId}/stages/${stageId}/start`, { method: "PATCH", body: JSON.stringify({}) });
   },
+  async acceptStage(orderId: number, stageId: number) {
+    return request<OrderStage>(`/api/orders/${orderId}/stages/${stageId}/accept`, { method: "PATCH", body: JSON.stringify({}) });
+  },
   async reorderStages(orderId: number, order: number[]) {
     return request<OrderStage[]>(`/api/orders/${orderId}/stages/reorder`, { method: "PATCH", body: JSON.stringify({ order }) });
   },
@@ -1225,6 +1228,8 @@ export interface OrderStage {
   sort_order: number;
   assigned_to?: string;
   assigned_name?: string;
+  accepted_by?: string | null;   // кто принял задачу (закреплена за ним)
+  accepted_at?: string | null;
   required_role?: string;
   depends_on_previous?: number;
   transfer_qty?: number;

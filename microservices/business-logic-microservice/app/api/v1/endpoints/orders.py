@@ -1797,6 +1797,19 @@ async def return_rework(order_id: int, body: ReturnReworkRequest, request: Reque
     return {"success": True, "rework_stage_id": rework_stage_id, "otk_attempts": int(attempts)}
 
 
+def _assert_stage_actor(stage, u):
+    """Доступ к действиям над этапом: админ/менеджер — всегда; иначе только
+    назначенный исполнитель, а если задача уже ПРИНЯТА (accepted_by) — только
+    принявший её. Чужой оператор/отдел трогать принятую задачу не может."""
+    if u.role in ("admin", "manager"):
+        return
+    uid = str(u.id)
+    if stage.accepted_by and stage.accepted_by != uid:
+        raise HTTPException(403, "Задача принята другим исполнителем")
+    if stage.assigned_to != uid:
+        raise HTTPException(403, "Вы не назначены на этот этап")
+
+
 @router.patch("/orders/{order_id}/stages/{stage_id}/transfer")
 async def transfer_stage(order_id: int, stage_id: int, request: Request):
     """Исполнитель фиксирует кол-во переданных следующему этапу перед завершением."""
@@ -1812,8 +1825,7 @@ async def transfer_stage(order_id: int, stage_id: int, request: Request):
     )).scalar_one_or_none()
     if not stage:
         raise HTTPException(404, "Этап не найден")
-    if u.role not in ("admin", "manager") and stage.assigned_to != str(u.id):
-        raise HTTPException(403, "Вы не назначены на этот этап")
+    _assert_stage_actor(stage, u)
 
     # Потолок: для пер-позиционного этапа — кол-во ПОЗИЦИИ, иначе — кол-во заказа (legacy)
     cap, cap_label = await _stage_qty_cap(db, stage, order_id)
@@ -1838,8 +1850,7 @@ async def start_stage(order_id: int, stage_id: int, request: Request):
     )).scalar_one_or_none()
     if not stage:
         raise HTTPException(404, "Этап не найден")
-    if u.role not in ("admin", "manager") and stage.assigned_to != str(u.id):
-        raise HTTPException(403, "Вы не назначены на этот этап")
+    _assert_stage_actor(stage, u)
     if stage.status != "pending":
         raise HTTPException(400, f"Этап уже в статусе {stage.status}")
     res = await db.execute(
@@ -1850,6 +1861,46 @@ async def start_stage(order_id: int, stage_id: int, request: Request):
         raise HTTPException(409, "Этап уже начат другим пользователем")
     await _audit(db, u, "stage", stage_id, "stage_started",
                  old_value="pending", new_value="in_progress",
+                 details=json.dumps({"order_id": order_id, "stage": stage.stage_name}, ensure_ascii=False))
+    await db.commit()
+    updated = (await db.execute(select(OrderStage).where(OrderStage.id == stage_id))).scalar_one()
+    return {**_m(updated), "components": updated.components}
+
+
+@router.patch("/orders/{order_id}/stages/{stage_id}/accept")
+async def accept_stage(order_id: int, stage_id: int, request: Request):
+    """Исполнитель ПРИНИМАЕТ задачу — она закрепляется лично за ним (accepted_by)
+    и переходит в работу. После этого её не может трогать другой исполнитель/отдел
+    (только админ/менеджер могут переназначить)."""
+    u = _user(request)
+    db = _db(request)
+    stage = (await db.execute(
+        select(OrderStage).where(OrderStage.id == stage_id, OrderStage.order_id == order_id)
+    )).scalar_one_or_none()
+    if not stage:
+        raise HTTPException(404, "Этап не найден")
+    uid = str(u.id)
+    if stage.accepted_by and stage.accepted_by != uid:
+        raise HTTPException(409, "Задача уже принята другим исполнителем")
+    if u.role not in ("admin", "manager") and stage.assigned_to != uid:
+        is_assignee = (await db.execute(
+            select(StageAssignee.id).where(
+                StageAssignee.stage_id == stage_id, StageAssignee.user_id == u.id)
+        )).scalar_one_or_none()
+        if not is_assignee:
+            raise HTTPException(403, "Вы не назначены на этот этап")
+    if stage.status not in ("pending", "in_progress"):
+        raise HTTPException(400, f"Этап нельзя принять (статус: {stage.status})")
+    new_status = "in_progress" if stage.status == "pending" else stage.status
+    await db.execute(
+        update(OrderStage).where(OrderStage.id == stage_id)
+        .values(accepted_by=uid, accepted_at=func.now(),
+                assigned_to=stage.assigned_to or uid,
+                status=new_status,
+                started_at=func.coalesce(OrderStage.started_at, func.now()),
+                updated_at=func.now())
+    )
+    await _audit(db, u, "stage", stage_id, "stage_accepted",
                  details=json.dumps({"order_id": order_id, "stage": stage.stage_name}, ensure_ascii=False))
     await db.commit()
     updated = (await db.execute(select(OrderStage).where(OrderStage.id == stage_id))).scalar_one()
@@ -2191,6 +2242,7 @@ async def assign_stage(order_id: int, stage_id: int, request: Request):
         .where(OrderStage.id == stage_id)
         .values(assigned_to=employee_id, assigned_name=employee_name,
                 status="pending",
+                accepted_by=None, accepted_at=None,   # переназначение снимает «принято»
                 updated_at=func.now())
     )
     await _audit(db, u, "stage", stage_id, "stage_assigned",
@@ -2577,8 +2629,11 @@ async def complete_stage(order_id: int, stage_id: int, request: Request):
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if order and order.status in ("Отменен", "Отменён", "Завершен", "Завершён"):
         raise HTTPException(400, f"Заказ в терминальном статусе «{order.status}» — этап изменить нельзя")
-    # Только назначенный исполнитель (assigned_to или в stage_assignees) или менеджер/админ
+    # Только назначенный исполнитель (assigned_to или в stage_assignees) или менеджер/админ.
+    # Если задача ПРИНЯТА — завершить может только принявший её.
     if u.role not in ("admin", "manager"):
+        if stage.accepted_by and stage.accepted_by != str(u.id):
+            raise HTTPException(403, "Задача принята другим исполнителем")
         is_assignee = stage.assigned_to == str(u.id)
         if not is_assignee:
             sa_row = (await db.execute(

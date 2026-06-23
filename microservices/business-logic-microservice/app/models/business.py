@@ -162,6 +162,8 @@ class OrderStage(Base):
     sort_order    = Column(Integer, default=0)
     assigned_to   = Column(String(100))
     assigned_name = Column(String(200))
+    accepted_by   = Column(String(50))                # кто «принял» задачу — закреплена лично за ним
+    accepted_at   = Column(DateTime)                  # когда принял
     required_role = Column(String(50))
     depends_on_previous = Column(Integer, default=1)  # 1=ждать, 0=параллельно
     transfer_qty  = Column(Integer, default=0)        # 1=фиксировать передачу
