@@ -169,8 +169,9 @@ class OrderStage(Base):
     transfer_qty  = Column(Integer, default=0)        # 1=фиксировать передачу
     transferred_qty = Column(Integer)                 # фактически передано следующему этапу
     instructions  = Column(Text)                      # инструкция для исполнителя
-    next_stage_id = Column(Integer, nullable=True)    # куда идёт после завершения (id другого order_stage)
-    rework_target_type = Column(String(50))           # для гейтов (aoi/otk): тип этапа, куда уходит брак
+    next_stage_id = Column(Integer, nullable=True)    # ребро графа: куда идёт ПОСЛЕ завершения/прохождения (pass)
+    on_fail_stage_id = Column(Integer, nullable=True) # ребро графа: куда идёт при БРАКЕ на гейте (напр. Ремонт РЭА)
+    rework_target_type = Column(String(50))           # legacy: тип этапа, куда уходит брак (если нет on_fail_stage_id)
     components_json = Column(Text, default="[]")
     est_minutes   = Column(Integer)                   # норматив времени на этап (мин)
     checklist     = Column(Text, default="[]")        # JSON: [{text, done}]

@@ -52,6 +52,12 @@ CANONICAL_STAGE_LABELS = {
     "warehouse_fg":   "Склад готовой продукции",
     "order_assembly": "Сборка всего заказа",
     "shipment":       "Отгрузка",
+    # Графовый маршрут (диаграмма): петли ремонта и доп. ветки
+    "repair":         "Ремонт РЭА",
+    "programmer":     "Программатор",
+    "batch_check":    "Проверка партии",
+    "marking":        "Маркировка",
+    "assembly_rea":   "Монтаж РЭА",
 }
 
 # Роль по умолчанию для этапа (если в системе заведена соответствующая роль).
@@ -61,7 +67,72 @@ _DEFAULT_ROLE = {
     "aoi":       "operator_otk",
     "otk":       "operator_otk",
     "shipment":  "operator_shipment",
+    "assembly_rea": "montažnik",
+    "marking":   "operator_engraving",
 }
+
+
+def build_graph_route(
+    needs_smd: bool = True,
+    is_receiver: bool = False,
+    needs_assembly: bool = True,
+) -> list[dict]:
+    """Графовый маршрут «как на диаграмме»: линейный костяк + петли ремонта на гейтах
+    (AOI/ОТК: брак → «Ремонт РЭА» → обратно на гейт) + ветка «Программатор» для приёмников.
+
+    Возвращает список узлов:
+      {key, stage_type, stage_name, sort_order, required_role, depends_on_previous,
+       repair (bool — этот узел стоит вне костяка, активируется только по браку),
+       on_fail (key гейта→ремонт), back_to (key — ремонт→обратно на гейт)}
+    Костяк продвигается по sort_order; петли ремонта — через рёбра on_fail/back_to.
+    """
+    if not needs_smd and not is_receiver and not needs_assembly:
+        raise ValueError("Некорректная конфигурация изделия: нет ни одного производственного признака")
+
+    backbone: list[str] = ["distribution"]
+    if needs_smd:
+        backbone += ["warehouse_smd", "smd", "aoi", "marking"]
+    if is_receiver:
+        backbone += ["otk", "programmer"]
+    elif needs_assembly:
+        backbone += ["otk", "warehouse_rea", "issue_rea", "assembly_rea", "otk"]
+    backbone += ["warehouse_fg", "order_assembly", "shipment"]
+
+    # уникальные ключи для повторяющихся типов (две ОТК → otk_1, otk_2)
+    totals: dict = {}
+    for st in backbone:
+        totals[st] = totals.get(st, 0) + 1
+    seen: dict = {}
+    keyed: list = []
+    for st in backbone:
+        if totals[st] > 1:
+            seen[st] = seen.get(st, 0) + 1
+            keyed.append((f"{st}_{seen[st]}", st))
+        else:
+            keyed.append((st, st))
+
+    nodes: list[dict] = []
+    for i, (key, st) in enumerate(keyed):
+        nodes.append({
+            "key": key, "stage_type": st, "stage_name": CANONICAL_STAGE_LABELS.get(st, st),
+            "sort_order": (i + 1) * 10, "required_role": _DEFAULT_ROLE.get(st),
+            "depends_on_previous": 1, "repair": False, "on_fail": None, "back_to": None,
+        })
+
+    # Петли ремонта на каждом гейте (aoi/otk)
+    repair_sort = (len(keyed) + 1) * 100
+    extra: list[dict] = []
+    for n in nodes:
+        if n["stage_type"] in QC_GATES or n["stage_type"] in ("aoi", "otk"):
+            rkey = f"repair__{n['key']}"
+            n["on_fail"] = rkey
+            extra.append({
+                "key": rkey, "stage_type": "repair", "stage_name": CANONICAL_STAGE_LABELS["repair"],
+                "sort_order": repair_sort, "required_role": _DEFAULT_ROLE.get("repair"),
+                "depends_on_previous": 0, "repair": True, "on_fail": None, "back_to": n["key"],
+            })
+            repair_sort += 10
+    return nodes + extra
 
 
 def build_canonical_stages(
@@ -76,6 +147,13 @@ def build_canonical_stages(
       required_role, rework_target_type, instructions
     Этапы идут последовательно (depends_on_previous=1); sort_order с шагом 10.
     """
+    # Пустая конфигурация изделия: нет ни СМД, ни приёмника, ни сборки РЭА — маршрут
+    # выродился бы в distribution→склад ГП без единого производственного/ОТК этапа,
+    # и склад ГП оприходовался бы «из воздуха». Это некорректная настройка изделия.
+    if not needs_smd and not is_receiver and not needs_assembly:
+        raise ValueError(
+            "Некорректная конфигурация изделия: нужен хотя бы один из признаков "
+            "needs_smd / is_receiver / needs_assembly (маршрут без производства и ОТК)")
     steps: list[str] = ["distribution"]
 
     if needs_smd:

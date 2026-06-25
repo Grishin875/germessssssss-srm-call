@@ -47,7 +47,7 @@ def _m(obj) -> dict:
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 class DefectRecord(BaseModel):
-    quantity: int
+    quantity: int = Field(ge=0)
     comment: Optional[str] = None
     designator: Optional[str] = None
     defect_type_id: Optional[int] = None
@@ -61,12 +61,12 @@ class OtkCheckRequest(BaseModel):
     defect_comment: Optional[str] = None
     rejection_photo_url: Optional[str] = None
     records: Optional[List[DefectRecord]] = None
-    good_qty: Optional[int] = None
-    defect_qty: Optional[int] = None
-    good: Optional[int] = None
-    defect: Optional[int] = None
+    good_qty: Optional[int] = Field(None, ge=0)      # годных не может быть < 0
+    defect_qty: Optional[int] = Field(None, ge=0)    # брака не может быть < 0
+    good: Optional[int] = Field(None, ge=0)
+    defect: Optional[int] = Field(None, ge=0)
     is_firmware_done: Optional[bool] = None
-    firmware_qty: Optional[int] = None
+    firmware_qty: Optional[int] = Field(None, ge=0)
     firmware_version: Optional[str] = None
     # ОТК может указать, на какой отдел/этап вернуть брак (stage_type или id этапа).
     # Если не указан — авто-выбор последнего завершённого производственного этапа.
@@ -454,16 +454,19 @@ async def ship_partial(body: ShipPartialRequest, request: Request):
             raise HTTPException(404, f"Партия {s.batchId} не найдена")
         if batch.status != "готово к отгрузке":
             raise HTTPException(400, f"Партия {s.batchId} не готова к отгрузке")
-        # Заказ с незакрытым браком держим целиком — годную партию тоже не отгружаем,
-        # пока брак не переделают (status-машина держит заказ в «Доработка»).
+        # Позицию с незакрытым браком ИЛИ партией в СЦ ('Передан в СЦ') держим:
+        # годную партию той же позиции не отгружаем, пока дефект не переделают/спишут.
+        # Скоуп по позиции (order_item_id) — брак в одной позиции не блокирует другие.
         if batch.order_id:
-            has_brak = (await db.execute(text(
-                "SELECT 1 FROM otk_batches WHERE order_id=:oid AND status='брак' LIMIT 1"
-            ), {"oid": batch.order_id})).scalar_one_or_none()
-            if has_brak:
+            hold = (await db.execute(text(
+                "SELECT 1 FROM otk_batches WHERE order_id=:oid "
+                "AND order_item_id IS NOT DISTINCT FROM :iid "
+                "AND status IN ('брак','Передан в СЦ') LIMIT 1"
+            ), {"oid": batch.order_id, "iid": batch.order_item_id})).scalar_one_or_none()
+            if hold:
                 raise HTTPException(
-                    400, f"Заказ №{batch.order_id} на доработке (есть брак) — отгрузка заблокирована, "
-                         "пока брак не будет переделан")
+                    400, f"Заказ №{batch.order_id}: по этой позиции есть незакрытый брак/ремонт (СЦ) — "
+                         "отгрузка заблокирована, пока дефект не переделают или не спишут")
         good = int(batch.good_qty)
         already = int(batch.shipped_qty or 0)
         remaining = good - already
@@ -537,11 +540,17 @@ async def reports(request: Request, date_from: Optional[str] = None, date_to: Op
 async def delete_report_batch(batch_id: str, request: Request):
     _perm(request, "production.edit")
     db = _db(request)
-    result = await db.execute(select(OtkBatch.id).where(OtkBatch.batch_id == batch_id))
-    row = result.scalar_one_or_none()
+    result = await db.execute(
+        select(OtkBatch.id, OtkBatch.status).where(OtkBatch.batch_id == batch_id))
+    row = result.first()
     if not row:
         raise HTTPException(404, "Партия не найдена")
-    oid = row
+    oid, status = row[0], row[1]
+    # Нельзя стирать историю качества уже проверенной/отгруженной/бракованной партии
+    # (как в delete_batch): удаление допустимо только для непроверенной «Принята».
+    if status != "Принята":
+        raise HTTPException(
+            400, f"Партию в статусе «{status}» удалить нельзя — это уничтожит историю ОТК/брака/ремонта")
     await db.execute(delete(DefectRecordModel).where(DefectRecordModel.otk_batch_id == oid))
     await db.execute(delete(ScRepair).where(ScRepair.otk_batch_id == oid))
     await db.execute(delete(OtkBatch).where(OtkBatch.batch_id == batch_id))

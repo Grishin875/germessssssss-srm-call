@@ -1,5 +1,5 @@
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── 1С schemas ────────────────────────────────────────────────────────────────
@@ -7,7 +7,7 @@ from pydantic import BaseModel
 class OneCOrderItem(BaseModel):
     nomenclature_code: str   # код номенклатуры в 1С
     nomenclature_name: str   # наименование
-    quantity: int
+    quantity: int = Field(gt=0)        # позиция заказа из 1С строго > 0
     unit: Optional[str] = "шт"
 
 
@@ -26,7 +26,7 @@ class OneCNomenclatureItem(BaseModel):
     code: str
     name: str
     unit: Optional[str] = "шт"
-    quantity: Optional[float] = 0
+    quantity: Optional[float] = Field(0, ge=0)   # остаток-снимок не может быть < 0
 
 
 class OneCStockWebhook(BaseModel):
@@ -41,7 +41,7 @@ class BitrixDealWebhook(BaseModel):
     deal_id: str
     title: str
     product_name: Optional[str] = None
-    quantity: Optional[int] = 1
+    quantity: Optional[int] = Field(1, gt=0)     # кол-во в сделке Битрикс строго > 0
     deadline: Optional[str] = None
     responsible_name: Optional[str] = None
     comment: Optional[str] = None

@@ -1,6 +1,6 @@
 from typing import Optional, List
 from decimal import Decimal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -8,10 +8,10 @@ from datetime import datetime
 
 class ComponentCreate(BaseModel):
     name: str
-    stock: float = 0
+    stock: float = Field(0, ge=0)
     category: str = "Разное"
     unit: Optional[str] = None
-    min_stock: Optional[float] = None
+    min_stock: Optional[float] = Field(None, ge=0)
     comment: Optional[str] = None
     units_per_reel: Optional[float] = None
     block: str = "СМД"
@@ -24,7 +24,9 @@ class ComponentCreate(BaseModel):
 
 
 class ComponentUpdate(ComponentCreate):
-    pass
+    # None = «не менять остаток» (отличаем от явного 0, чтобы правка прочих полей
+    # не обнуляла склад). Остаток не может стать отрицательным.
+    stock: Optional[float] = Field(None, ge=0)
 
 
 class ComponentOut(BaseModel):
@@ -54,7 +56,7 @@ class ComponentOut(BaseModel):
 
 class BatchItem(BaseModel):
     name: str
-    qty: float
+    qty: float = Field(..., gt=0)     # приход/списание партии — строго > 0
     isNew: bool = False
     category: Optional[str] = None
 
@@ -73,7 +75,7 @@ class BatchOperationRequest(BaseModel):
 
 class ReserveItem(BaseModel):
     component_name: str
-    quantity: float
+    quantity: float = Field(..., gt=0)   # резерв строго > 0 (минус снимал чужие брони)
 
 
 class ReserveForOrderRequest(BaseModel):
@@ -158,7 +160,7 @@ class StockTransferRequest(BaseModel):
     component_name: str
     from_warehouse_id: int
     to_warehouse_id: int
-    quantity: float
+    quantity: float = Field(..., gt=0)   # перемещение между складами строго > 0
     note: Optional[str] = None
 
 
@@ -167,8 +169,8 @@ class StockTransferRequest(BaseModel):
 class CaseCreate(BaseModel):
     name: str
     source: str = "warehouse"         # warehouse | 3d_print | purchase
-    stock: int = 0
-    min_stock: int = 0
+    stock: int = Field(0, ge=0)
+    min_stock: int = Field(0, ge=0)
     color: Optional[str] = None
     material: Optional[str] = None
     comment: Optional[str] = None
@@ -292,6 +294,6 @@ class ComponentRequestCreate(BaseModel):
     order_id: int
     stage_id: Optional[int] = None
     component_name: str
-    qty: float
+    qty: float = Field(..., gt=0)        # заявка на компоненты строго > 0
     reason: Optional[str] = "брак"
     comment: Optional[str] = None

@@ -126,10 +126,11 @@ async def complete_repair(body: CompleteRepairRequest, request: Request):
     if batch.status != "Передан в СЦ":
         raise HTTPException(400, f"Партия не в ремонте (статус: {batch.status})")
 
+    if not body.repairedItems:
+        raise HTTPException(400, "Укажите результат ремонта")
     repaired = sum(max(0, int(i.fixed_qty or 0)) for i in body.repairedItems)
     defect_total = int(batch.defect_qty or 0)
-    if repaired <= 0:
-        raise HTTPException(400, "Укажите исправленное количество")
+    # repaired==0 допустимо: вся партия невосстановима → полный scrap, терминальный статус.
     if repaired > defect_total:
         raise HTTPException(400, f"Исправлено {repaired}, но в партии брака только {defect_total}")
 
@@ -169,16 +170,27 @@ async def complete_repair(body: CompleteRepairRequest, request: Request):
             "oid": f"SCRAP-{batch.id}",
         })
 
-    # Возврат на повторную проверку ОТК: released_qty = отремонтированное количество.
-    # scrap НЕ возвращается в released (он списан выше как WRITEOFF), поэтому
-    # баланс по партии сходится: исходный брак = repaired (на повторную проверку)
-    #                                          + scrap (списано WRITEOFF).
-    await db.execute(
-        update(OtkBatch)
-        .where(OtkBatch.id == batch.id, OtkBatch.status == "Передан в СЦ")
-        .values(status="Принята", released_qty=repaired, good_qty=0, defect_qty=0,
-                receive_date=func.now(), check_date=None, defect_comment=new_comment)
-    )
+    if repaired > 0:
+        # Возврат на повторную проверку ОТК: released_qty = отремонтированное количество.
+        # scrap НЕ возвращается в released (он списан выше как WRITEOFF), поэтому
+        # баланс по партии сходится: исходный брак = repaired (на повторную проверку)
+        #                                          + scrap (списано WRITEOFF).
+        await db.execute(
+            update(OtkBatch)
+            .where(OtkBatch.id == batch.id, OtkBatch.status == "Передан в СЦ")
+            .values(status="Принята", released_qty=repaired, good_qty=0, defect_qty=0,
+                    receive_date=func.now(), check_date=None, defect_comment=new_comment)
+        )
+    else:
+        # Вся партия невосстановима (scrap=defect_total, списано WRITEOFF выше) →
+        # терминальный 'Списан'. Статус исключён из счётчиков статус-машины (СЦ-холд
+        # снимается), но defect_qty СОХРАНЯЕМ — иначе брак исчез бы из отчёта качества.
+        await db.execute(
+            update(OtkBatch)
+            .where(OtkBatch.id == batch.id, OtkBatch.status == "Передан в СЦ")
+            .values(status="Списан", released_qty=0, good_qty=0, defect_qty=defect_total,
+                    check_date=func.now(), defect_comment=new_comment)
+        )
 
     if batch.order_id:
         await auto_update_order_status(db, batch.order_id)

@@ -313,16 +313,19 @@ class SendMessageRequest(BaseModel):
     reply_to: Optional[int] = None
 
 
-async def _notify_mentions(db, text_body: str, channel_id: int, author_id: int, author_name: str):
-    """Уведомить упомянутых @username (если они участники канала)."""
+async def _notify_mentions(db, text_body: str, channel_id: int, author_id: int, author_name: str,
+                           already=None):
+    """Уведомить упомянутых @username (если они участники канала). `already` — id,
+    кому уже ушло общее уведомление о сообщении (чтобы не слать дубль)."""
     names = set(_MENTION_RE.findall(text_body or ""))
     if not names:
         return
+    skip = {int(x) for x in (already or set())}
     for nm in names:
         uid = (await db.execute(text(
             "SELECT id FROM users WHERE LOWER(username)=LOWER(:n) OR LOWER(full_name)=LOWER(:n) LIMIT 1"
         ), {"n": nm})).scalar_one_or_none()
-        if uid and uid != author_id and await _is_member(db, channel_id, uid):
+        if uid and uid != author_id and uid not in skip and await _is_member(db, channel_id, uid):
             await notify_user(db, str(uid), f"{author_name} упомянул вас в чате",
                               text_body[:140], link="/chat", type_="info")
 
@@ -365,7 +368,8 @@ async def send_message(channel_id: int, body: SendMessageRequest, request: Reque
     for uid in others:
         await notify_user(db, str(uid), f"Новое сообщение от {title}",
                           txt[:140], link="/chat", type_="info")
-    await _notify_mentions(db, txt, channel_id, u.id, _uname(u))
+    # Упомянутым шлём отдельное уведомление, но НЕ дублируем тем, кто уже получил общее.
+    await _notify_mentions(db, txt, channel_id, u.id, _uname(u), already=set(others))
 
     await db.commit()
     return {
@@ -385,9 +389,13 @@ class ReadRequest(BaseModel):
 async def mark_read(channel_id: int, body: ReadRequest, request: Request):
     u = _user(request)
     db = _db(request)
+    # Ограничиваем переданный id реальным максимумом сообщений канала: иначе клиент
+    # мог бы «прочитать наперёд» (last_read > всех будущих id) и навсегда скрыть непрочитанные.
     await db.execute(text("""
         UPDATE chat_channel_members
-        SET last_read_message_id = GREATEST(COALESCE(last_read_message_id, 0), :mid)
+        SET last_read_message_id = GREATEST(
+            COALESCE(last_read_message_id, 0),
+            LEAST(:mid, (SELECT COALESCE(MAX(id), 0) FROM chat_messages WHERE channel_id=:cid)))
         WHERE channel_id=:cid AND user_id=:uid
     """), {"mid": body.last_message_id, "cid": channel_id, "uid": u.id})
     await db.commit()

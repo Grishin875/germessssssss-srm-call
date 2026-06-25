@@ -213,7 +213,10 @@ export default function OrderDetailPage() {
     const acc: Record<string, { name: string; production_type: string; warehouseName: string; needed: number }> = {};
     for (const pos of orderPositions) {
       if (!pos.name) continue;
-      const recipes = allRecipes.filter(r => r.product_name === pos.name);
+      // Со склада списываются только строки source='warehouse' (как на бэке).
+      // Внутрипроизводственные (smd/3d_print/гравировка), под-изделия и закупка
+      // склад не расходуют — иначе превью даёт ложный дефицит и блокирует запуск.
+      const recipes = allRecipes.filter(r => r.product_name === pos.name && (r.source || "warehouse") === "warehouse");
       for (const r of recipes) {
         const needed = Math.ceil(r.norm * pos.qty);
         const key = r.component_name;
@@ -524,6 +527,15 @@ export default function OrderDetailPage() {
       toast.success(`Маршрут по ТЗ построен: ${r.created} этап(ов)`);
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
   }
+  async function genGraphRoute() {
+    if (stages.length > 0 && !confirm("Заменить этапы ГРАФОВЫМ маршрутом (с петлями ремонта AOI/ОТК → Ремонт РЭА → назад и веткой Программатор)?")) return;
+    try {
+      const r = await api.generateGraphRoute(id, { replace: true });
+      await loadStages();
+      api.getOrder(id).then(setOrder).catch(() => {});
+      toast.success(`Графовый маршрут построен: ${r.created} этап(ов)`);
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+  }
   async function loadTemplates() {
     try { setRouteTemplates(await api.getRouteTemplates()); } catch {}
   }
@@ -773,6 +785,7 @@ export default function OrderDetailPage() {
                   <Button size="sm" variant="ghost" onClick={saveAsTemplate}>★ Сохранить как шаблон</Button>
                 )}
                 <Button size="sm" variant="secondary" onClick={genCanonical} title="Построить канонический маршрут по ТЗ (12 этапов)">⚙ Маршрут по ТЗ</Button>
+                <Button size="sm" variant="secondary" onClick={genGraphRoute} title="Графовый маршрут как на диаграмме: петли ремонта (AOI/ОТК → Ремонт РЭА → назад) + ветка Программатор">🔀 Маршрут по диаграмме</Button>
                 <Button size="sm" onClick={() => {
                   setEditStageModal(null);
                   setStageForm({ stage_name: "", stage_type: "assembly", required_role: "", sort_order: String(stages.length), instructions: "", next_stage_id: "", est_minutes: "", result_photo: "", checklist: "" });

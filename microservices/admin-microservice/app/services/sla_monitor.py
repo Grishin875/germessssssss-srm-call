@@ -46,27 +46,29 @@ async def check_sla_once(session) -> int:
 
         for order in overdue:
             title = f"SLA нарушен: заказ №{order['id']} в статусе «{order['status']}»"
-            already = (await session.execute(text("""
-                SELECT 1 FROM notifications
-                WHERE title = :t AND created_at > NOW() - INTERVAL '24 hours'
-                LIMIT 1
-            """), {"t": title})).scalar_one_or_none()
-            if already:
-                continue
             overdue_h = int(order["hours_in_status"]) - int(rule["max_hours"])
+            # Дедуп ПО ПОЛУЧАТЕЛЮ (NOT EXISTS на user), а не глобально по заголовку:
+            # иначе вновь добавленный/ранее офлайн получатель не получил бы активное
+            # оповещение, потому что заголовок уже существует у кого-то другого.
             stmt = text("""
                 INSERT INTO notifications (user_id, type, title, message, link, is_read)
-                SELECT id, 'warning', :t, :msg, :link, false
-                FROM users WHERE is_active = true AND role IN :roles
+                SELECT u.id, 'warning', :t, :msg, :link, false
+                FROM users u
+                WHERE u.is_active = true AND u.role IN :roles
+                  AND NOT EXISTS (
+                    SELECT 1 FROM notifications n
+                    WHERE n.user_id = u.id AND n.title = :t
+                      AND n.created_at > NOW() - INTERVAL '24 hours'
+                  )
             """).bindparams(bindparam("roles", expanding=True))
-            await session.execute(stmt, {
+            res = await session.execute(stmt, {
                 "t": title,
                 "msg": f"{order['product_name']}: лимит {rule['max_hours']} ч, "
                        f"просрочка {max(overdue_h, 1)} ч.",
                 "link": f"/orders/{order['id']}",
                 "roles": list(roles),
             })
-            created += 1
+            created += res.rowcount or 0
     return created
 
 

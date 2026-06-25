@@ -92,6 +92,7 @@ class FinishedGoods(Base):
     good_qty = Column(Integer, default=0)
     defect_qty = Column(Integer, default=0)
     total_qty = Column(Integer, default=0)
+    reserved = Column(Integer, default=0)   # зарезервировано под заказы-потребители (под-изделия)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 

@@ -5,6 +5,7 @@ from sqlalchemy import select, update, delete, func, text, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.products import Recipe, RecipeProductOrder, RecipeAttachment, FinishedGoods, Planning, RecipeCase, RecipeStage, ProductCatalog
+from shared.core.bom import explode_warehouse_demand, direct_warehouse_demand
 from app.schemas.recipes import (
     RecipeCreate, RecipeUpdate, CalculateDemandRequest, ProductOrderItem,
     RecipeCaseCreate, RecipeCaseUpdate, RecipeCaseOut,
@@ -185,23 +186,20 @@ async def update_product_order(items: List[ProductOrderItem], request: Request):
 async def calculate_demand(body: CalculateDemandRequest, request: Request):
     _perm(request, "recipes.view")
     db = _db(request)
-    stock_result = await db.execute(text("SELECT name, stock FROM warehouse_components"))
-    stock_map = {_norm(r["name"]): float(r["stock"] or 0) for r in stock_result.mappings().all()}
+    # Доступно = stock − reserved (свободный остаток), как при создании заказа.
+    stock_rows = (await db.execute(text("SELECT name, stock, reserved FROM warehouse_components"))).mappings().all()
+    stock_map = {_norm(r["name"]): max(0.0, float(r["stock"] or 0) - float(r["reserved"] or 0)) for r in stock_rows}
 
-    all_recipes = (await db.execute(select(Recipe))).scalars().all()
-
+    # Потребность разворачиваем общим помощником: складские листья + вложенные
+    # под-изделия (source='product', с зачётом ГП) + складские корпуса.
     demand: dict = {}
     for entry in body.plan:
         if not entry.product or entry.qty <= 0:
             continue
-        pn = _norm(entry.product)
-        for rec in all_recipes:
-            if _norm(rec.product_name) != pn:
-                continue
-            wname = (rec.warehouse_component_name or "").strip() or rec.component_name
-            key = _norm(wname)
-            demand.setdefault(key, {"component": wname, "total": 0})
-            demand[key]["total"] += float(rec.norm) * entry.qty
+        sub = await explode_warehouse_demand(db, entry.product, entry.qty)
+        for key, v in sub.items():
+            slot = demand.setdefault(key, {"component": v["name"], "total": 0.0})
+            slot["total"] += v["required"]
 
     result = []
     for key, d in demand.items():
@@ -259,72 +257,53 @@ async def calculate_order_demand(request: Request):
             "production_type": body.get("production_type"),
         })
 
-    # Берём актуальные остатки из warehouse_components (один раз)
+    # Свободный остаток (stock − reserved) — как гейт при создании заказа.
     stock_rows = (await db.execute(text(
-        "SELECT name, stock FROM warehouse_components"
+        "SELECT name, stock, reserved FROM warehouse_components"
     ))).mappings().all()
-    stock_map = {_norm(r["name"]): float(r["stock"] or 0) for r in stock_rows}
+    free_map = {_norm(r["name"]): max(0.0, float(r["stock"] or 0) - float(r["reserved"] or 0)) for r in stock_rows}
 
-    # Агрегируем потребность по компоненту через все позиции.
-    # ключ агрегации: (нормализованное имя компонента, production_type, source)
-    agg: dict = {}
+    # Складская потребность через общий помощник — ровно тот же набор, что создаёт и
+    # резервирует create_order: листья source='warehouse' + развёртка под-изделий
+    # (source='product', зачёт ГП) + складские корпуса. Один остаток выделяется один раз.
+    demand: dict = {}
     found_any = False
-
     for pos in positions:
-        q = select(Recipe).where(func.lower(Recipe.product_name) == _norm(pos["product_name"]))
-        if pos.get("production_type"):
-            q = q.where(Recipe.production_type == pos["production_type"])
-        recipes = (await db.execute(q)).scalars().all()
-        if not recipes:
+        has_recipe = (await db.execute(text(
+            "SELECT 1 FROM recipes WHERE LOWER(TRIM(product_name))=:pn LIMIT 1"
+        ), {"pn": _norm(pos["product_name"])})).scalar()
+        if not has_recipe:
             continue
         found_any = True
-        for rec in recipes:
-            wname = (rec.warehouse_component_name or "").strip() or rec.component_name
-            prod_type = rec.production_type or "SMD"
-            source = rec.source or "warehouse"
-            key = (_norm(wname), prod_type, source)
-            slot = agg.setdefault(key, {
-                "component_name": wname,
-                "production_type": prod_type,
-                "source": source,
-                "required": 0.0,
-            })
-            slot["required"] += float(rec.norm) * pos["qty"]
+        # Прямые складские компоненты — ровно то, что гейтит/резервирует create_order
+        # (под-изделия в модели авто-подзаказа создаются отдельными заказами, не блокируют).
+        sub = await direct_warehouse_demand(db, pos["product_name"], pos["qty"])
+        for key, v in sub.items():
+            slot = demand.setdefault(key, {"component_name": v["name"], "required": 0.0})
+            slot["required"] += v["required"]
 
     if not found_any:
         return {"canProduce": False, "message": "Рецептура не найдена", "components": [], "by_department": {}}
 
     components = []
     can_produce = True
-    by_department: dict = {}  # production_type -> list of components
-
-    for slot in agg.values():
+    for key, slot in demand.items():
         wname = slot["component_name"]
-        source = slot["source"]
-        avail = stock_map.get(_norm(wname), 0)
         required = slot["required"]
+        avail = free_map.get(key, 0)
         shortage = max(0, required - avail)
-
-        # Нехватку считаем только для warehouse-компонентов
-        if source == "warehouse" and shortage > 0:
+        if shortage > 0:
             can_produce = False
-
-        entry = {
-            "component_name": wname,
-            "production_type": slot["production_type"],
-            "source": source,
-            "required": required,
-            "available": avail,
-            "shortage": shortage if source == "warehouse" else 0,
-            "canProduce": shortage == 0 or source != "warehouse",
-        }
-        components.append(entry)
-        by_department.setdefault(slot["production_type"], []).append(entry)
-
+        components.append({
+            "component_name": wname, "production_type": "Склад", "source": "warehouse",
+            "required": required, "available": avail,
+            "shortage": shortage, "canProduce": shortage == 0,
+        })
+    components.sort(key=lambda c: c["component_name"])
     return {
         "canProduce": can_produce,
         "components": components,
-        "by_department": by_department,
+        "by_department": {"Склад": components},
     }
 
 
@@ -411,6 +390,14 @@ async def list_recipe_stages(request: Request, product_name: str = None):
 async def create_recipe_stage(body: RecipeStageCreate, request: Request):
     _perm(request, "recipes.edit")
     db = _db(request)
+    # Запрет дубля этапа с тем же именем у изделия (параллельные группы с равным
+    # sort_order, но разными именами — допустимы).
+    dup = (await db.execute(text(
+        "SELECT 1 FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn "
+        "AND LOWER(TRIM(stage_name))=:sn LIMIT 1"
+    ), {"pn": _norm(body.product_name), "sn": _norm(body.stage_name)})).scalar()
+    if dup:
+        raise HTTPException(409, f"Этап «{body.stage_name}» у изделия уже существует")
     stage = RecipeStage(
         product_name=body.product_name.strip(),
         stage_name=body.stage_name.strip(),
@@ -518,10 +505,19 @@ async def delete_recipe_stage(stage_id: int, request: Request):
 async def list_finished_goods(request: Request):
     _perm(request, "recipes.view")
     db = _db(request)
-    result = await db.execute(
-        select(FinishedGoods).order_by(func.lower(FinishedGoods.product_name))
-    )
-    return [_m(r) for r in result.scalars().all()]
+    # available_qty = произведено − отгружено (отгрузка не уменьшает good_qty в БД,
+    # поэтому считаем доступный остаток на чтении — идемпотентно, без расхождений).
+    rows = (await db.execute(text("""
+        SELECT fg.*, COALESCE(s.shipped, 0) AS shipped_qty,
+               GREATEST(COALESCE(fg.good_qty,0) - COALESCE(s.shipped,0), 0) AS available_qty
+        FROM finished_goods fg
+        LEFT JOIN (
+            SELECT LOWER(TRIM(product_name)) AS pn, SUM(COALESCE(shipped_qty,0)) AS shipped
+            FROM otk_batches GROUP BY LOWER(TRIM(product_name))
+        ) s ON s.pn = LOWER(TRIM(fg.product_name))
+        ORDER BY LOWER(fg.product_name)
+    """))).mappings().all()
+    return [dict(r) for r in rows]
 
 
 @router.post("/recipes/finished-goods", status_code=201)
@@ -571,33 +567,36 @@ async def get_recipe(recipe_id: int, request: Request):
 async def create_recipe(body: RecipeCreate, request: Request):
     _perm(request, "recipes.edit")
     db = _db(request)
+    # Само-ссылка в BOM запрещена (простейший цикл A←A); защищает рекурсивную развёртку.
+    if _norm(body.component_name) == _norm(body.product_name):
+        raise HTTPException(400, "Компонент не может совпадать с изделием (само-ссылка в BOM)")
     side = body.board_side.upper() if body.board_side and body.board_side.upper() in ("TOP", "BOTTOM") else None
-    stmt = (
-        pg_insert(Recipe)
-        .values(component_name=body.component_name.strip(), product_name=body.product_name.strip(),
-                norm=body.norm, production_type=body.production_type,
-                source=body.source or "warehouse",
+    # Upsert БЕЗ зависимости от ON CONFLICT: на recipes нет уникального ключа, поэтому
+    # ON CONFLICT DO NOTHING не срабатывал и каждый POST плодил дубль → задвоение BOM.
+    # Сначала пробуем обновить существующий рецепт (без учёта регистра), иначе вставляем.
+    upd = (
+        update(Recipe)
+        .where(func.lower(Recipe.component_name) == _norm(body.component_name),
+               func.lower(Recipe.product_name) == _norm(body.product_name),
+               Recipe.production_type == body.production_type)
+        .values(norm=body.norm, source=body.source or "warehouse",
                 warehouse_component_name=body.warehouse_component_name,
-                designator=body.designator, board_side=side, component_size=body.component_size)
-        .on_conflict_do_nothing()
+                designator=body.designator, board_side=side,
+                component_size=body.component_size, updated_at=func.now())
         .returning(Recipe)
     )
-    row = (await db.execute(stmt)).mappings().one_or_none()
-
+    row = (await db.execute(upd)).mappings().first()
     if not row:
-        # update existing
-        upd = (
-            update(Recipe)
-            .where(func.lower(Recipe.component_name) == _norm(body.component_name),
-                   func.lower(Recipe.product_name) == _norm(body.product_name),
-                   Recipe.production_type == body.production_type)
-            .values(norm=body.norm, source=body.source or "warehouse",
+        ins = (
+            pg_insert(Recipe)
+            .values(component_name=body.component_name.strip(), product_name=body.product_name.strip(),
+                    norm=body.norm, production_type=body.production_type,
+                    source=body.source or "warehouse",
                     warehouse_component_name=body.warehouse_component_name,
-                    designator=body.designator, board_side=side,
-                    component_size=body.component_size, updated_at=func.now())
+                    designator=body.designator, board_side=side, component_size=body.component_size)
             .returning(Recipe)
         )
-        row = (await db.execute(upd)).mappings().one_or_none()
+        row = (await db.execute(ins)).mappings().one_or_none()
     await _ensure_in_catalog(db, body.product_name)
     await db.commit()
     return dict(row) if row else {}
@@ -607,6 +606,8 @@ async def create_recipe(body: RecipeCreate, request: Request):
 async def update_recipe(recipe_id: int, body: RecipeUpdate, request: Request):
     _perm(request, "recipes.edit")
     db = _db(request)
+    if _norm(body.component_name) == _norm(body.product_name):
+        raise HTTPException(400, "Компонент не может совпадать с изделием (само-ссылка в BOM)")
     side = body.board_side.upper() if body.board_side and body.board_side.upper() in ("TOP", "BOTTOM") else None
     stmt = (
         update(Recipe)
@@ -787,7 +788,18 @@ async def delete_catalog_item(item_id: int, request: Request):
     item = (await db.execute(select(ProductCatalog).where(ProductCatalog.id == item_id))).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Не найдено")
+    # Не удаляем изделие из каталога, пока у него есть рецептура/этапы/корпуса —
+    # иначе остаются «осиротевшие» строки. Полное удаление — через /recipes/product/delete.
+    pn = _norm(item.name)
+    deps = (await db.execute(text("""
+        SELECT (SELECT COUNT(*) FROM recipes WHERE LOWER(TRIM(product_name))=:pn)
+             + (SELECT COUNT(*) FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn)
+             + (SELECT COUNT(*) FROM recipe_cases WHERE LOWER(TRIM(product_name))=:pn)
+    """), {"pn": pn})).scalar() or 0
+    if deps:
+        raise HTTPException(409, "У изделия есть рецептура/этапы/корпуса — используйте полное удаление изделия")
     await db.delete(item)
+    await db.commit()
     return {"ok": True}
 
 

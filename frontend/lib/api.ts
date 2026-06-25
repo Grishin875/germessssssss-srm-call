@@ -315,6 +315,12 @@ export const api = {
       `/api/orders/${orderId}/stages/generate-canonical`, { method: "POST", body: JSON.stringify(data || {}) }
     );
   },
+  // Графовый маршрут «как на диаграмме»: петли ремонта (AOI/ОТК → Ремонт РЭА → назад) + ветка Программатор
+  async generateGraphRoute(orderId: number, data?: { needs_smd?: boolean; is_receiver?: boolean; needs_assembly?: boolean; replace?: boolean }) {
+    return request<{ created: number; stages: OrderStage[] }>(
+      `/api/orders/${orderId}/stages/generate-graph-route`, { method: "POST", body: JSON.stringify(data || {}) }
+    );
+  },
   // Контроль качества на этапе-гейте (AOI / ОТК)
   async inspectStage(orderId: number, stageId: number, data: { result: "pass" | "fail"; comment?: string; photo_url?: string; needs_components?: boolean; rework_stage_id?: number }) {
     return request<{ result: string; stage_id: number; rework_stage_id: number | null; order_status?: string }>(
@@ -1236,7 +1242,8 @@ export interface OrderStage {
   transferred_qty?: number;
   instructions?: string;
   next_stage_id?: number | null;
-  rework_target_type?: string | null;   // для гейтов AOI/ОТК — тип этапа возврата брака
+  on_fail_stage_id?: number | null;     // ребро графа: куда уходит брак на гейте (напр. Ремонт РЭА)
+  rework_target_type?: string | null;   // legacy: тип этапа возврата брака (если нет on_fail_stage_id)
   components: { name: string; qty: number; source?: string }[];
   est_minutes?: number | null;
   checklist?: string;        // JSON-строка [{text, done}]

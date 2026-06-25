@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy import select, update, delete, func, text, or_
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.documents import FirmwareBatch, Document
 
@@ -249,22 +249,24 @@ def _m(obj) -> dict:
 class FirmwareCreate(BaseModel):
     source_batch_id: str
     product_name: str
-    qty: int
+    qty: int = Field(gt=0)
     operator_id: str
     firmware_version: Optional[str] = None
     comment: Optional[str] = None
 
 
 class FirmwareComplete(BaseModel):
-    good_qty: int
-    defect_qty: int
+    good_qty: int = Field(ge=0)
+    defect_qty: int = Field(ge=0)
     comment: Optional[str] = None
 
 
 class FirmwareUpdate(BaseModel):
     firmware_version: Optional[str] = None
-    status: Optional[str] = None
     comment: Optional[str] = None
+    # status НЕ редактируется здесь: переходами управляет стейт-машина
+    # (create → «В работе», /complete → «Завершена»). Иначе можно было вернуть
+    # завершённую партию в «В работе» и повторно списать в operations.
 
 
 # ── Firmware ──────────────────────────────────────────────────────────────────

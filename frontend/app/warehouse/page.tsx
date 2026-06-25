@@ -1208,16 +1208,29 @@ export default function WarehousePage() {
               </thead>
               <tbody>
                 {historyOps.map((op, idx) => {
-                  const isIn = op.operation_type === "RECEIVE";
+                  // Классифицируем по типу: приход(+) / списание(−) / нейтральное (бронь,
+                  // создание, изменение и т.п.) — раньше всё кроме RECEIVE рисовалось красным «−».
+                  const inflow = ["RECEIVE", "TRANSFER", "RESERVE_RELEASE", "CASE_RECEIVE", "FG_RECEIPT"].includes(op.operation_type);
+                  const outflow = ["WRITEOFF", "CASE_WRITEOFF"].includes(op.operation_type);
+                  const opLabels: Record<string, string> = {
+                    RECEIVE: "Приход", WRITEOFF: "Списание", TRANSFER: "Перемещение",
+                    RESERVE: "Бронь", RESERVE_RELEASE: "Снятие брони", CREATE: "Создание",
+                    UPDATE: "Изменение", DELETE: "Удаление", CANCEL: "Отмена",
+                    CASE_RECEIVE: "Приход корпусов", CASE_WRITEOFF: "Списание корпусов",
+                    FG_RECEIPT: "Оприходование ГП",
+                  };
+                  const label = opLabels[op.operation_type] || op.operation_type;
+                  const color = inflow ? "#10b981" : outflow ? "#ef4444" : "var(--text-muted)";
+                  const sign = inflow ? "+" : outflow ? "-" : "";
                   return (
                     <tr key={idx}>
                       <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>{op.created_at ? new Date(op.created_at).toLocaleString("ru") : "—"}</td>
                       <td>
-                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: isIn ? "#10b98120" : "#ef444420", color: isIn ? "#10b981" : "#ef4444" }}>
-                          {op.operation_type === "RECEIVE" ? "Приход" : op.operation_type === "WRITEOFF" ? "Списание" : op.operation_type}
+                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inflow ? "#10b98120" : outflow ? "#ef444420" : "var(--bg-muted, #e5e7eb)", color }}>
+                          {label}
                         </span>
                       </td>
-                      <td style={{ fontWeight: 600, color: isIn ? "#10b981" : "#ef4444" }}>{isIn ? "+" : "-"}{op.quantity}</td>
+                      <td style={{ fontWeight: 600, color }}>{sign}{op.quantity}</td>
                       <td style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 200 }}>{op.note || "—"}</td>
                       <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>{op.operation_id || "—"}</td>
                     </tr>

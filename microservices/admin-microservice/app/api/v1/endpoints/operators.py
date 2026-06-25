@@ -54,13 +54,13 @@ async def operators_stats(request: Request, period: str = "all"):
     rows = (await db.execute(text(f"""
         SELECT op.employee_id, op.name, op.role,
             COUNT(DISTINCT pb.batch_id) as batches_count,
-            COALESCE(SUM(COALESCE(pb.actual_qty, pb.planned_qty)), 0) as total_produced,
+            COALESCE(SUM(pb.actual_qty) FILTER (WHERE pb.status <> 'Отменена'), 0) as total_produced,
             COUNT(DISTINCT CASE WHEN pb.status IN ('Завершена','Готов к проверке ОТК') THEN pb.batch_id END) as completed_batches,
-            COUNT(DISTINCT CASE WHEN o.status IN ('Завершен','Передан на ОТК') THEN o.id END) as completed_orders_count
+            COUNT(DISTINCT CASE WHEN o.status IN ('Завершен','Завершён') THEN o.id END) as completed_orders_count
         FROM operators op
         LEFT JOIN production_batch_operators pbo ON op.employee_id = pbo.operator_id
         LEFT JOIN production_batches pb ON pbo.batch_id = pb.batch_id {date_filter}
-        LEFT JOIN orders o ON pb.order_id = o.id AND o.status IN ('Завершен','Передан на ОТК')
+        LEFT JOIN orders o ON pb.order_id = o.id AND o.status IN ('Завершен','Завершён')
         GROUP BY op.employee_id, op.name, op.role
         ORDER BY completed_orders_count DESC, batches_count DESC
     """))).mappings().all()
@@ -91,9 +91,9 @@ async def operator_stats(employee_id: str, request: Request, period: str = "all"
     }.get(period, "")
     general = (await db.execute(text(f"""
         SELECT COUNT(DISTINCT pb.batch_id) as batches_count,
-            COALESCE(SUM(COALESCE(pb.actual_qty,pb.planned_qty)),0) as total_produced,
+            COALESCE(SUM(pb.actual_qty) FILTER (WHERE pb.status <> 'Отменена'),0) as total_produced,
             COUNT(DISTINCT CASE WHEN pb.status IN ('Завершена','Готов к проверке ОТК') THEN pb.batch_id END) as completed_batches,
-            COUNT(DISTINCT CASE WHEN o.status IN ('Завершен','Передан на ОТК') THEN o.id END) as completed_orders_count
+            COUNT(DISTINCT CASE WHEN o.status IN ('Завершен','Завершён') THEN o.id END) as completed_orders_count
         FROM production_batch_operators pbo
         JOIN production_batches pb ON pbo.batch_id=pb.batch_id {date_filter}
         LEFT JOIN orders o ON pb.order_id=o.id
@@ -102,7 +102,7 @@ async def operator_stats(employee_id: str, request: Request, period: str = "all"
     by_type = (await db.execute(text(f"""
         SELECT pb.production_type,
             COUNT(DISTINCT pb.batch_id) as batches_count,
-            COALESCE(SUM(COALESCE(pb.actual_qty,pb.planned_qty)),0) as total_produced
+            COALESCE(SUM(pb.actual_qty) FILTER (WHERE pb.status <> 'Отменена'),0) as total_produced
         FROM production_batch_operators pbo
         JOIN production_batches pb ON pbo.batch_id=pb.batch_id {date_filter}
         WHERE pbo.operator_id=:e

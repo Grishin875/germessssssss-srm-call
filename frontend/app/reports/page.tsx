@@ -53,7 +53,9 @@ export default function ReportsPage() {
     try {
       const inc = statuses.size ? [...statuses].join(",") : ALL_STATUSES.join(",");
       let rows = await api.getOrders(undefined, search.trim() || undefined, inc);
-      if (fromDate) rows = rows.filter(o => new Date(o.created_at) >= new Date(fromDate));
+      // Обе границы парсим в ЛОКАЛЬНОМ времени (с компонентом времени), иначе
+      // "YYYY-MM-DD" для from трактуется как UTC-полночь, а to — как локальная → сдвиг дня.
+      if (fromDate) rows = rows.filter(o => new Date(o.created_at) >= new Date(fromDate + "T00:00:00"));
       if (toDate) rows = rows.filter(o => new Date(o.created_at) <= new Date(toDate + "T23:59:59"));
       setData(rows);
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }

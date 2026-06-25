@@ -22,6 +22,12 @@ const DEFAULT_STAGE_TYPES: StageTypeItem[] = [
   { id: 0, code: "warehouse_fg",   label: "Склад готовой продукции", color: "#6b7280", sort_order: 13, is_active: true },
   { id: 0, code: "order_assembly", label: "Сборка всего заказа",     color: "#0ea5e9", sort_order: 14, is_active: true },
   { id: 0, code: "shipment",       label: "Отгрузка",                color: "#3b82f6", sort_order: 15, is_active: true },
+  // Графовый маршрут (диаграмма): петли ремонта и доп. ветки
+  { id: 0, code: "repair",         label: "Ремонт РЭА",              color: "#ef4444", sort_order: 16, is_active: true },
+  { id: 0, code: "programmer",     label: "Программатор",            color: "#a855f7", sort_order: 17, is_active: true },
+  { id: 0, code: "marking",        label: "Маркировка",              color: "#f59e0b", sort_order: 18, is_active: true },
+  { id: 0, code: "assembly_rea",   label: "Монтаж РЭА",              color: "#0ea5e9", sort_order: 19, is_active: true },
+  { id: 0, code: "batch_check",    label: "Проверка партии",         color: "#ec4899", sort_order: 20, is_active: true },
 ];
 
 export function useStageTypes() {

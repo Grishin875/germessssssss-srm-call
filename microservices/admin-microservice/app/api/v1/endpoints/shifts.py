@@ -33,6 +33,61 @@ async def _get_operator_for_user(db, user) -> Optional[str]:
     return result.scalar_one_or_none()
 
 
+async def _shift_transition_error(db, shift_id, emp_id):
+    """Различаем 404 (нет смены/не ваша) и 409 (недопустимый переход статуса)."""
+    cur = (await db.execute(
+        select(ShiftSchedule.status).where(
+            ShiftSchedule.id == shift_id, ShiftSchedule.operator_id == emp_id)
+    )).scalar_one_or_none()
+    if cur is None:
+        raise HTTPException(404, "Смена не найдена или не принадлежит вам")
+    raise HTTPException(409, f"Недопустимый переход из статуса «{cur}»")
+
+
+def _time_to_min(t: Optional[str]) -> Optional[int]:
+    """'HH:MM' → минуты от полуночи; None при пустом/невалидном."""
+    if not t:
+        return None
+    try:
+        hh, mm = str(t).split(":")[:2]
+        return int(hh) * 60 + int(mm)
+    except (ValueError, TypeError):
+        return None
+
+
+def _windows_overlap(s1, e1, s2, e2) -> bool:
+    """Пересекаются ли два временных окна [s,e) в минутах. Ночная смена (e<=s)
+    нормализуется как +24ч."""
+    if e1 <= s1:
+        e1 += 24 * 60
+    if e2 <= s2:
+        e2 += 24 * 60
+    return s1 < e2 and s2 < e1
+
+
+async def _assert_no_shift_overlap(db, operator_id, shift_date, start_time, end_time,
+                                   exclude_id=None):
+    """Проверка занятости оператора. Если у новой и существующей смены заданы времена —
+    проверяем ПЕРЕСЕЧЕНИЕ окон (несколько непересекающихся смен в день разрешены);
+    иначе (времена не заданы) — старое правило «одна смена на дату»."""
+    rows = (await db.execute(
+        select(ShiftSchedule.id, ShiftSchedule.start_time, ShiftSchedule.end_time)
+        .where(ShiftSchedule.operator_id == operator_id,
+               ShiftSchedule.shift_date == shift_date,
+               ShiftSchedule.status != "Отменена")
+    )).all()
+    ns, ne = _time_to_min(start_time), _time_to_min(end_time)
+    for rid, est, eet in rows:
+        if exclude_id is not None and rid == exclude_id:
+            continue
+        es, ee = _time_to_min(est), _time_to_min(eet)
+        if None in (ns, ne, es, ee):
+            # Времена не полностью заданы — консервативно: одна смена на дату.
+            raise ValueError("У оператора уже есть смена на эту дату")
+        if _windows_overlap(ns, ne, es, ee):
+            raise ValueError("Пересечение по времени с существующей сменой оператора")
+
+
 @router.get("/shifts")
 async def list_shifts(request: Request, start_date: Optional[str] = None, end_date: Optional[str] = None,
                       operator_id: Optional[str] = None, department: Optional[str] = None,
@@ -131,14 +186,11 @@ async def create_shift(body: ShiftCreate, request: Request):
         select(Operator.employee_id).where(Operator.employee_id == body.operator_id)
     )).scalar_one_or_none()
     if not op: raise HTTPException(400, "Оператор не найден")
-    existing = (await db.execute(
-        select(ShiftSchedule.id).where(
-            ShiftSchedule.operator_id == body.operator_id,
-            ShiftSchedule.shift_date == body.shift_date,
-            ShiftSchedule.status != "Отменена"
-        )
-    )).scalar_one_or_none()
-    if existing: raise HTTPException(400, "У оператора уже есть смена на эту дату")
+    try:
+        await _assert_no_shift_overlap(db, body.operator_id, body.shift_date,
+                                       body.start_time, body.end_time)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     shift = ShiftSchedule(
         shift_date=body.shift_date, shift_type=body.shift_type, start_time=body.start_time,
         end_time=body.end_time, operator_id=body.operator_id, department=body.department,
@@ -159,27 +211,25 @@ async def bulk_shifts(body: BulkShiftsRequest, request: Request):
     created, errors = [], []
     for s in body.shifts:
         try:
-            op = (await db.execute(
-                select(Operator.employee_id).where(Operator.employee_id == s.operator_id)
-            )).scalar_one_or_none()
-            if not op: raise ValueError(f"Оператор {s.operator_id} не найден")
-            ex = (await db.execute(
-                select(ShiftSchedule.id).where(
-                    ShiftSchedule.operator_id == s.operator_id,
-                    ShiftSchedule.shift_date == s.shift_date,
-                    ShiftSchedule.status != "Отменена"
+            # SAVEPOINT на строку: ошибка БД одной строки не валит остальные
+            # (иначе сессия уходит в pending-rollback и «травит» валидные строки).
+            async with db.begin_nested():
+                op = (await db.execute(
+                    select(Operator.employee_id).where(Operator.employee_id == s.operator_id)
+                )).scalar_one_or_none()
+                if not op: raise ValueError(f"Оператор {s.operator_id} не найден")
+                await _assert_no_shift_overlap(db, s.operator_id, s.shift_date,
+                                               s.start_time, s.end_time)
+                shift = ShiftSchedule(
+                    shift_date=s.shift_date, shift_type=s.shift_type, start_time=s.start_time,
+                    end_time=s.end_time, operator_id=s.operator_id, department=s.department,
+                    comment=s.comment, created_by=u.id, status="Запланирована",
                 )
-            )).scalar_one_or_none()
-            if ex: raise ValueError(f"У оператора {s.operator_id} уже есть смена на {s.shift_date}")
-            shift = ShiftSchedule(
-                shift_date=s.shift_date, shift_type=s.shift_type, start_time=s.start_time,
-                end_time=s.end_time, operator_id=s.operator_id, department=s.department,
-                comment=s.comment, created_by=u.id, status="Запланирована",
-            )
-            db.add(shift)
-            await db.flush()
-            await db.refresh(shift)
-            created.append(_m(shift))
+                db.add(shift)
+                await db.flush()
+                await db.refresh(shift)
+                row = _m(shift)
+            created.append(row)
         except Exception as ex:
             errors.append({"shift": s.model_dump(), "error": str(ex)})
     await db.commit()
@@ -212,14 +262,17 @@ async def confirm_shift(shift_id: int, request: Request):
     u = _user(request)
     emp_id = await _get_operator_for_user(db, u)
     if not emp_id: raise HTTPException(403, "Вы не являетесь оператором")
+    # Подтвердить можно только запланированную смену (не отменённую/выполненную).
     stmt = (
         update(ShiftSchedule)
-        .where(ShiftSchedule.id == shift_id, ShiftSchedule.operator_id == emp_id)
+        .where(ShiftSchedule.id == shift_id, ShiftSchedule.operator_id == emp_id,
+               ShiftSchedule.status == "Запланирована")
         .values(status="Подтверждена", updated_at=func.now())
         .returning(ShiftSchedule)
     )
     row = (await db.execute(stmt)).mappings().one_or_none()
-    if not row: raise HTTPException(404, "Смена не найдена или не принадлежит вам")
+    if not row:
+        await _shift_transition_error(db, shift_id, emp_id)
     await db.commit()
     return {"success": True, "shift": dict(row)}
 
@@ -232,14 +285,17 @@ async def complete_shift(shift_id: int, body: ShiftCompleteRequest, request: Req
     emp_id = await _get_operator_for_user(db, u)
     if not emp_id: raise HTTPException(403, "Вы не являетесь оператором")
     if body.actual_hours <= 0: raise HTTPException(400, "Укажите фактически отработанные часы")
+    # Завершить можно только запланированную/подтверждённую смену (не отменённую/уже выполненную).
     stmt = (
         update(ShiftSchedule)
-        .where(ShiftSchedule.id == shift_id, ShiftSchedule.operator_id == emp_id)
+        .where(ShiftSchedule.id == shift_id, ShiftSchedule.operator_id == emp_id,
+               ShiftSchedule.status.in_(["Запланирована", "Подтверждена"]))
         .values(status="Выполнена", actual_hours=body.actual_hours, updated_at=func.now())
         .returning(ShiftSchedule)
     )
     row = (await db.execute(stmt)).mappings().one_or_none()
-    if not row: raise HTTPException(404, "Смена не найдена или не принадлежит вам")
+    if not row:
+        await _shift_transition_error(db, shift_id, emp_id)
     await db.commit()
     return {"success": True, "shift": dict(row)}
 

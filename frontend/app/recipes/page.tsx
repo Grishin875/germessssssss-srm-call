@@ -33,6 +33,7 @@ const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
   engraving: { label: "Гравировка",  color: "#f59e0b" },
   "3d_print":{ label: "3D Печать",   color: "#10b981" },
   purchase:  { label: "Закупка",     color: "#f97316" },
+  product:   { label: "Под-изделие", color: "#ec4899" },  // полуфабрикат своего производства
 };
 
 function SourceBadge({ source }: { source?: string }) {
@@ -956,6 +957,12 @@ export default function RecipesPage() {
             <select value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>
               {Object.entries(SOURCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
+            {form.source === "product" && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                В поле «Компонент» укажите название изделия-полуфабриката из каталога —
+                оно будет браться с готовой продукции, а на нехватку создастся отдельный под-заказ.
+              </div>
+            )}
           </div>
           <div>
             <label>Сторона платы</label>

@@ -28,6 +28,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_smd BOOLEAN DEFAULT true"))
         await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS is_receiver BOOLEAN DEFAULT false"))
         await conn.execute(text("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS needs_assembly BOOLEAN DEFAULT true"))
+        # Резерв готовой продукции под заказы-потребители (под-изделия / вложенный BOM)
+        await conn.execute(text("ALTER TABLE finished_goods ADD COLUMN IF NOT EXISTS reserved INTEGER DEFAULT 0"))
         # Авто-импорт существующих изделий в каталог из recipe_product_order
         await conn.execute(text("""
             INSERT INTO product_catalog (name)
@@ -35,6 +37,27 @@ async def lifespan(app: FastAPI):
             WHERE product_name IS NOT NULL AND product_name != ''
             ON CONFLICT (name) DO NOTHING
         """))
+
+    # Дедуп рецептов + уникальный функциональный индекс (страховка от задвоения BOM).
+    # В отдельной транзакции с подавлением ошибок: грязные данные не должны валить старт.
+    import logging as _logging
+    try:
+        async with engine.begin() as conn2:
+            from sqlalchemy import text as _text
+            await conn2.execute(_text("""
+                DELETE FROM recipes r USING recipes r2
+                WHERE r.id < r2.id
+                  AND lower(trim(r.component_name)) = lower(trim(r2.component_name))
+                  AND lower(trim(r.product_name))   = lower(trim(r2.product_name))
+                  AND coalesce(r.production_type,'') = coalesce(r2.production_type,'')
+            """))
+            await conn2.execute(_text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_recipe_lower
+                ON recipes (lower(trim(component_name)), lower(trim(product_name)),
+                            coalesce(production_type,''))
+            """))
+    except Exception:
+        _logging.getLogger(__name__).exception("recipe dedup/index migration skipped")
     yield
     await engine.dispose()
 

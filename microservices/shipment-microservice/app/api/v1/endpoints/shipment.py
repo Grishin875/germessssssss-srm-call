@@ -1,7 +1,7 @@
 from typing import Optional, List
 from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy import select, update, func, text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # OtkBatch lives in otk-microservice, use text() for cross-service operations
 from shared.core.notify import notify_managers
@@ -24,7 +24,7 @@ def _perm(r, p):
 
 class ShipmentItem(BaseModel):
     batchId: str
-    qty: int
+    qty: int = Field(gt=0)   # запрет 0/отрицательного: минус откатывал отгрузку в минус
     shipperId: str
     invoiceNumber: Optional[str] = None
     recipient: Optional[str] = None
@@ -196,7 +196,15 @@ async def shipment_history(request: Request, date_from: Optional[str] = None,
 async def finished_goods(request: Request):
     _perm(request, "otk.view")
     db = _db(request)
-    rows = (await db.execute(text(
-        "SELECT * FROM finished_goods ORDER BY LOWER(product_name)"
-    ))).mappings().all()
+    # available_qty = произведено − отгружено (good_qty в БД не уменьшается при отгрузке).
+    rows = (await db.execute(text("""
+        SELECT fg.*, COALESCE(s.shipped, 0) AS shipped_qty,
+               GREATEST(COALESCE(fg.good_qty,0) - COALESCE(s.shipped,0), 0) AS available_qty
+        FROM finished_goods fg
+        LEFT JOIN (
+            SELECT LOWER(TRIM(product_name)) AS pn, SUM(COALESCE(shipped_qty,0)) AS shipped
+            FROM otk_batches GROUP BY LOWER(TRIM(product_name))
+        ) s ON s.pn = LOWER(TRIM(fg.product_name))
+        ORDER BY LOWER(fg.product_name)
+    """))).mappings().all()
     return list(rows)

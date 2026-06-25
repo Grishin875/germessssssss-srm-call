@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS transferred_qty INTEGER"))
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS instructions TEXT"))
         await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS next_stage_id INTEGER"))
+        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS on_fail_stage_id INTEGER"))
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS submit_photo_url VARCHAR(500)"))
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)"))
         await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0"))

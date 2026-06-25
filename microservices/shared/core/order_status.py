@@ -51,7 +51,8 @@ async def update_order_status(db, order_id: int) -> bool:
             COUNT(*) FILTER (WHERE status = 'отгружено')         AS shipped,
             COUNT(*) FILTER (WHERE status = 'Принята')           AS accepted,
             COUNT(*) FILTER (WHERE status = 'Передан в СЦ')      AS in_sc,
-            COUNT(*) FILTER (WHERE status = 'брак')              AS brak
+            COUNT(*) FILTER (WHERE status = 'брак')              AS brak,
+            COUNT(*) FILTER (WHERE status = 'Списан')            AS scrapped
         FROM otk_batches WHERE order_id = :id
     """), {"id": order_id})).mappings().one()
 
@@ -64,20 +65,36 @@ async def update_order_status(db, order_id: int) -> bool:
     accepted  = otk["accepted"] or 0
     in_sc     = otk["in_sc"]    or 0
     brak      = otk["brak"]     or 0
+    scrapped  = otk["scrapped"] or 0
+
+    # Мультипозиция: позиции, ещё не дошедшие до терминала (нет ОТК-партий вовсе /
+    # висит незавершённая ОТК-партия / незавершённое производство). Для legacy-заказов
+    # без order_items вернётся 0 → работает прежняя order-level логика.
+    pending_positions = (await db.execute(text("""
+        SELECT COUNT(*) FROM order_items oi
+        WHERE oi.order_id = :id AND (
+            NOT EXISTS (SELECT 1 FROM otk_batches ob WHERE ob.order_item_id = oi.id)
+            OR EXISTS (SELECT 1 FROM otk_batches ob WHERE ob.order_item_id = oi.id
+                       AND ob.status NOT IN ('отгружено','Списан','Переделан'))
+            OR EXISTS (SELECT 1 FROM production_batches pb WHERE pb.order_item_id = oi.id
+                       AND pb.production_type != 'Сборка'
+                       AND pb.status NOT IN ('Завершена','Готов к проверке ОТК','Отменена'))
+        )
+    """), {"id": order_id})).scalar() or 0
 
     new_status = current
 
-    if brak > 0:
-        # Есть забракованная партия (100% критич. брак из otk_check result=3).
-        # Заказ нельзя закрывать и нельзя двигать дальше по маршруту, пока брак
-        # не переделают (повторная сдача в ОТК пометит партию 'Переделан') или
-        # руководитель не закроет заказ принудительно (TERMINAL обходит этот пересчёт).
+    if brak > 0 or in_sc > 0:
+        # Незакрытый брак (100% критич. из otk_check result=3) ИЛИ партия в СЦ
+        # ('Передан в СЦ') держат заказ в «Доработка»: нельзя закрывать и двигать
+        # дальше, пока не переделают/спишут (СЦ: repaired>0 → 'Принята', полный
+        # брак → 'Списан'). Руководитель может закрыть принудительно (TERMINAL обходит пересчёт).
         new_status = "Доработка"
-    elif (shipped > 0 and ready == 0 and accepted == 0 and in_sc == 0
-          and running == 0 and paused == 0 and (total == 0 or completed >= total)):
-        # Всё отгружено, ничего не зависло в ОТК И нет незавершённого производства —
-        # заказ закрыт. Для мультипозиции это не даёт закрыть заказ, пока другие
-        # позиции ещё в работе (running/paused) или не сданы в ОТК (completed<total).
+    elif ((shipped > 0 or scrapped > 0) and ready == 0 and accepted == 0
+          and running == 0 and paused == 0 and (total == 0 or completed >= total)
+          and pending_positions == 0):
+        # Всё разрешено: годное отгружено, невосстановимый брак списан, ничего не висит
+        # в ОТК/производстве, И все позиции дошли до терминала (мультипозиция) — заказ закрыт.
         new_status = "Завершен"
     elif accepted > 0:
         # Есть партии, ещё ожидающие проверки ОТК
@@ -85,9 +102,6 @@ async def update_order_status(db, order_id: int) -> bool:
     elif ready > 0:
         # Все проверенные партии годны и ждут отгрузки
         new_status = "Готов к отгрузке"
-    elif in_sc > 0 and ready == 0 and accepted == 0:
-        # Всё, что осталось — в сервис-центре; держим заказ открытым
-        new_status = "На проверке ОТК"
     elif total > 0 and completed >= total:
         # Производство завершено, ОТК-партий ещё нет
         new_status = "Готов к проверке ОТК"
@@ -100,10 +114,49 @@ async def update_order_status(db, order_id: int) -> bool:
             {"s": new_status, "id": order_id},
         )
         # Заказ завершён (любым путём: отгрузка/ОТК/СЦ) → списываем резерв компонентов со склада
+        # и приходуем готовую продукцию (для заказов без этапа warehouse_fg, напр. под-заказы).
         if new_status in ("Завершен", "Завершён"):
             await consume_order_reserve(db, order_id)
+            await credit_finished_goods_on_complete(db, order_id)
         return True
     return False
+
+
+async def credit_finished_goods_on_complete(db, order_id: int) -> int:
+    """Оприходовать ГП по завершении заказа, ЕСЛИ у заказа нет этапа warehouse_fg
+    (тот сам приходует ГП на своём завершении — не дублируем). Нужно, чтобы заказы
+    по рецептурным маршрутам (в т.ч. авто под-заказы на полуфабрикаты) попадали в
+    finished_goods и могли потребляться заказами-родителями. Идемпотентно."""
+    has_fg_stage = (await db.execute(text(
+        "SELECT 1 FROM order_stages WHERE order_id=:oid AND stage_type='warehouse_fg' LIMIT 1"
+    ), {"oid": order_id})).scalar()
+    if has_fg_stage:
+        return 0
+    rows = (await db.execute(text(
+        "SELECT product_name, COALESCE(SUM(good_qty),0) AS good FROM otk_batches "
+        "WHERE order_id=:oid GROUP BY product_name ORDER BY product_name"
+    ), {"oid": order_id})).mappings().all()
+    credited = 0
+    for idx, r in enumerate(rows):
+        good = int(r["good"] or 0)
+        pn = (r["product_name"] or "").strip()
+        if good <= 0 or not pn:
+            continue
+        marker = await db.execute(text(
+            "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+            "VALUES ('FG_RECEIPT', :pn, :q, :note, :oid) ON CONFLICT (operation_id) DO NOTHING"
+        ), {"pn": pn, "q": good, "note": f"Оприходование ГП по завершении заказа #{order_id}",
+            "oid": f"ORDER-FGCREDIT-{order_id}-{idx}"})
+        if marker.rowcount != 1:
+            continue
+        await db.execute(text(
+            "INSERT INTO finished_goods (product_name, good_qty, defect_qty, total_qty, updated_at) "
+            "VALUES (:pn, :q, 0, :q, NOW()) ON CONFLICT (product_name) DO UPDATE "
+            "SET good_qty = finished_goods.good_qty + :q, total_qty = finished_goods.total_qty + :q, "
+            "updated_at = NOW()"
+        ), {"pn": pn, "q": good})
+        credited += 1
+    return credited
 
 
 async def consume_order_reserve(db, order_id: int) -> int:
@@ -145,6 +198,30 @@ async def consume_order_reserve(db, order_id: int) -> int:
             "SET stock = GREATEST(COALESCE(stock,0) - :q, 0), "
             "    reserved = GREATEST(COALESCE(reserved,0) - :q, 0) "
             "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
+        ), {"q": r["quantity"], "n": r["component_name"]})
+        consumed += 1
+
+    # Списание зарезервированной ГП под-изделий: good_qty −q, reserved −q (потребление).
+    fg = (await db.execute(text(
+        "SELECT component_name, quantity FROM operations "
+        "WHERE operation_id LIKE :p AND operation_type='FG_RESERVE' ORDER BY operation_id"
+    ), {"p": f"ORDER-FGRESERVE-{order_id}-%"})).mappings().all()
+    for idx, r in enumerate(fg):
+        if not r["quantity"]:
+            continue
+        marker = await db.execute(text(
+            "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+            "VALUES ('FG_CONSUME', :cn, :q, :note, :oid) ON CONFLICT (operation_id) DO NOTHING"
+        ), {"cn": r["component_name"], "q": r["quantity"],
+            "note": f"Списание ГП под-изделия по завершении заказа #{order_id}",
+            "oid": f"ORDER-FGCONSUME-{order_id}-{idx}"})
+        if marker.rowcount != 1:
+            continue
+        await db.execute(text(
+            "UPDATE finished_goods SET good_qty = GREATEST(COALESCE(good_qty,0) - :q, 0), "
+            "reserved = GREATEST(COALESCE(reserved,0) - :q, 0), "
+            "total_qty = GREATEST(COALESCE(total_qty,0) - :q, 0), updated_at = NOW() "
+            "WHERE LOWER(TRIM(product_name)) = LOWER(TRIM(:n))"
         ), {"q": r["quantity"], "n": r["component_name"]})
         consumed += 1
     return consumed
@@ -196,5 +273,27 @@ async def release_order_reserve(db, order_id: int) -> int:
                 "UPDATE warehouse_components SET stock = COALESCE(stock,0) + :q "
                 "WHERE LOWER(TRIM(name)) = LOWER(TRIM(:n))"
             ), {"q": r["quantity"], "n": r["component_name"]})
+        released += 1
+
+    # Снятие резерва ГП под-изделий (при отмене заказа): reserved −q (good_qty не трогаем).
+    fg = (await db.execute(text(
+        "SELECT component_name, quantity FROM operations "
+        "WHERE operation_id LIKE :p AND operation_type='FG_RESERVE' ORDER BY operation_id"
+    ), {"p": f"ORDER-FGRESERVE-{order_id}-%"})).mappings().all()
+    for idx, r in enumerate(fg):
+        if not r["quantity"]:
+            continue
+        marker = await db.execute(text(
+            "INSERT INTO operations (operation_type, component_name, quantity, note, operation_id) "
+            "VALUES ('FG_RESERVE_RELEASE', :cn, :q, :note, :oid) ON CONFLICT (operation_id) DO NOTHING"
+        ), {"cn": r["component_name"], "q": r["quantity"],
+            "note": f"Снятие резерва ГП под-изделия отменённого заказа #{order_id}",
+            "oid": f"ORDER-FGRETURN-{order_id}-{idx}"})
+        if marker.rowcount != 1:
+            continue
+        await db.execute(text(
+            "UPDATE finished_goods SET reserved = GREATEST(COALESCE(reserved,0) - :q, 0), updated_at = NOW() "
+            "WHERE LOWER(TRIM(product_name)) = LOWER(TRIM(:n))"
+        ), {"q": r["quantity"], "n": r["component_name"]})
         released += 1
     return released

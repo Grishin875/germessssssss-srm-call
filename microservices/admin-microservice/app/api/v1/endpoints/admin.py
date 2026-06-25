@@ -37,7 +37,7 @@ async def rating_top(request: Request):
         LEFT JOIN operators op ON op.name = COALESCE(u.full_name, u.username)
         LEFT JOIN production_batch_operators pbo ON pbo.operator_id = op.employee_id
         LEFT JOIN production_batches pb ON pb.batch_id = pbo.batch_id
-        LEFT JOIN orders o ON o.id = pb.order_id AND o.status IN ('Завершен','Передан на ОТК')
+        LEFT JOIN orders o ON o.id = pb.order_id AND o.status IN ('Завершен','Завершён')
         WHERE u.is_active = true
         GROUP BY u.id, u.username, u.full_name, u.photo_url, u.birth_date
         ORDER BY completed_orders_count DESC LIMIT 3
@@ -92,7 +92,7 @@ async def user_profile(user_id: int, request: Request):
         LEFT JOIN operators op ON op.name=COALESCE(u.full_name,u.username)
         LEFT JOIN production_batch_operators pbo ON pbo.operator_id=op.employee_id
         LEFT JOIN production_batches pb ON pb.batch_id=pbo.batch_id
-        LEFT JOIN orders o ON o.id=pb.order_id AND o.status IN ('Завершен','Передан на ОТК')
+        LEFT JOIN orders o ON o.id=pb.order_id AND o.status IN ('Завершен','Завершён')
         WHERE u.id=:id GROUP BY u.id
     """), {"id": user_id})).scalar_one_or_none()
     user["completed_orders_count"] = int(cnt or 0)
