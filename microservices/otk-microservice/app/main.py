@@ -18,30 +18,40 @@ session_factory = make_session_factory(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import logging
+    from sqlalchemy import text
+    # 1) Свои таблицы — отдельной транзакцией.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        from sqlalchemy import text
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS rejection_photo_url VARCHAR(500)"))
-        # Колонки отгрузки (модель OtkBatch их объявляет, но create_all не добавляет в существующую таблицу)
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS shipped_qty INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS ship_date TIMESTAMP"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS shipper_id VARCHAR(50)"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(200)"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS recipient VARCHAR(200)"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS source_batch_id VARCHAR(100)"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS is_firmware_done INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_qty INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(100)"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
-        # Колонки журнала ремонтов СЦ (таблица могла быть создана старой версией без них)
-        await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS operator_id VARCHAR(50)"))
-        await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS repaired_qty INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS comment TEXT"))
-        await conn.execute(text("ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS items_json TEXT"))
-        # Колонки orders (на случай что OTK-сервис обновляет их напрямую через text())
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS submit_photo_url VARCHAR(500)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0"))
+    # 2) Миграции по одной, терпимо к ошибке: таблица orders создаётся business-logic,
+    #    на чистой БД её может ещё не быть; раньше общий transaction откатывал и create_all
+    #    (otk_batches) → взаимный дедлок business-logic↔otk на пустой базе.
+    _MIGRATIONS = [
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS rejection_photo_url VARCHAR(500)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS shipped_qty INTEGER DEFAULT 0",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS ship_date TIMESTAMP",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS shipper_id VARCHAR(50)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(200)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS recipient VARCHAR(200)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS source_batch_id VARCHAR(100)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS is_firmware_done INTEGER DEFAULT 0",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_qty INTEGER DEFAULT 0",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(100)",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER",
+        "ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS operator_id VARCHAR(50)",
+        "ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS repaired_qty INTEGER DEFAULT 0",
+        "ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS comment TEXT",
+        "ALTER TABLE sc_repairs ADD COLUMN IF NOT EXISTS items_json TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS submit_photo_url VARCHAR(500)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0",
+    ]
+    for _stmt in _MIGRATIONS:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(_stmt))
+        except Exception as e:
+            logging.getLogger("migrations").warning("skip migration [%s]: %s", type(e).__name__, _stmt[:70])
     yield
     await engine.dispose()
 

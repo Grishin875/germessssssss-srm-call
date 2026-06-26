@@ -15,52 +15,55 @@ session_factory = make_session_factory(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import logging
+    from sqlalchemy import text
+    # 1) Свои таблицы — отдельной транзакцией (коммитятся независимо от миграций ниже).
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Миграции: добавляем колонки если они отсутствуют
-        from sqlalchemy import text
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_department VARCHAR(100)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_comment TEXT"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS required_role VARCHAR(50)"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS depends_on_previous INTEGER DEFAULT 1"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS transfer_qty INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS transferred_qty INTEGER"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS instructions TEXT"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS next_stage_id INTEGER"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS on_fail_stage_id INTEGER"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS submit_photo_url VARCHAR(500)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS skipped_stage_ids TEXT"))
-        # Раздел B — расширения этапов
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS est_minutes INTEGER"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS checklist TEXT DEFAULT '[]'"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS result_photo VARCHAR(500)"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS pause_reason TEXT"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tags TEXT"))
-        # Канонический маршрут (ТЗ) — тип этапа возврата брака для гейтов AOI/ОТК
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)"))
-        # Руководители проекта (несколько) — только они закрывают заказ и печатают наряд
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS managers TEXT"))
-        # Комплектация заказа (несколько позиций для Excel) + даты получения/отправки
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS positions TEXT"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS received_date VARCHAR(50)"))
-        await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipment_date VARCHAR(50)"))
-        # Резерв компонентов: «reserved» на складе (владелец — warehouse-сервис; дублируем
-        # здесь идемпотентно, т.к. business-logic пишет в reserved при создании заказа).
-        await conn.execute(text("ALTER TABLE warehouse_components ADD COLUMN IF NOT EXISTS reserved NUMERIC(15,3) DEFAULT 0"))
-        # Мультипозиционные заказы: позиция = order_item; этапы/партии/ОТК ссылаются на позицию.
-        # order_id сохраняется для обратной совместимости и существующих запросов.
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
-        await conn.execute(text("ALTER TABLE production_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
-        await conn.execute(text("ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_order_stages_item ON order_stages(order_item_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_production_batches_item ON production_batches(order_item_id)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_otk_batches_item ON otk_batches(order_item_id)"))
-        # «Принять задачу»: закрепление этапа лично за исполнителем
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_by VARCHAR(50)"))
-        await conn.execute(text("ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP"))
+    # 2) Идемпотентные миграции — КАЖДАЯ своей транзакцией и терпима к ошибке. На чистой
+    #    БД таблица другого сервиса может ещё не существовать (её создаёт владелец); раньше
+    #    общий `engine.begin()` откатывал и create_all → дедлок между business-logic и otk.
+    _MIGRATIONS = [
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS assigned_department VARCHAR(100)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_comment TEXT",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS required_role VARCHAR(50)",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS depends_on_previous INTEGER DEFAULT 1",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS transfer_qty INTEGER DEFAULT 0",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS transferred_qty INTEGER",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS instructions TEXT",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS next_stage_id INTEGER",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS on_fail_stage_id INTEGER",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS submit_photo_url VARCHAR(500)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS skipped_stage_ids TEXT",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS est_minutes INTEGER",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS checklist TEXT DEFAULT '[]'",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS result_photo VARCHAR(500)",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS pause_reason TEXT",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS tags TEXT",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS rework_target_type VARCHAR(50)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS managers TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS positions TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS received_date VARCHAR(50)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipment_date VARCHAR(50)",
+        "ALTER TABLE warehouse_components ADD COLUMN IF NOT EXISTS reserved NUMERIC(15,3) DEFAULT 0",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS order_item_id INTEGER",
+        "ALTER TABLE production_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER",
+        "CREATE INDEX IF NOT EXISTS ix_order_stages_item ON order_stages(order_item_id)",
+        "CREATE INDEX IF NOT EXISTS ix_production_batches_item ON production_batches(order_item_id)",
+        "CREATE INDEX IF NOT EXISTS ix_otk_batches_item ON otk_batches(order_item_id)",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_by VARCHAR(50)",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP",
+    ]
+    for _stmt in _MIGRATIONS:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(_stmt))
+        except Exception as e:
+            logging.getLogger("migrations").warning("skip migration [%s]: %s", type(e).__name__, _stmt[:70])
     yield
     await engine.dispose()
 
