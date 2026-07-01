@@ -9,6 +9,7 @@ export interface StageRow {
   sort_order: number;
   depends_on_previous: number; // 1=последовательно, 0=параллельно
   components: string[];        // выбранные комплектующие для этапа
+  output_name: string;         // что выходит из этапа (полуфабрикат); пусто у последнего = конечный продукт
 }
 
 interface StageType {
@@ -24,12 +25,13 @@ interface Props {
   stageTypes: StageType[];
   systemRoles: SystemRoleItem[];
   availableComponents?: string[]; // список имён компонентов из рецептуры
+  productName?: string;           // название изделия — для подсказки «конечный продукт» на последнем этапе
 }
 
 function uid() { return Math.random().toString(36).slice(2); }
 
 export function newStageRow(stage_type = "assembly", sort_order = 0, stage_name = "", parallel = false): StageRow {
-  return { _key: uid(), stage_name, stage_type, required_role: "", sort_order, depends_on_previous: parallel ? 0 : 1, components: [] };
+  return { _key: uid(), stage_name, stage_type, required_role: "", sort_order, depends_on_previous: parallel ? 0 : 1, components: [], output_name: "" };
 }
 
 // Group stages by sort_order to show parallel groups
@@ -42,8 +44,9 @@ function groupBySortOrder(stages: StageRow[]): { order: number; rows: StageRow[]
   return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([order, rows]) => ({ order, rows }));
 }
 
-export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, availableComponents }: Props) {
+export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, availableComponents, productName }: Props) {
   const active = stageTypes.filter(s => s.is_active);
+  const maxOrder = stages.length ? Math.max(...stages.map(s => s.sort_order)) : 0;
 
   function labelOf(code: string) {
     return active.find(t => t.code === code)?.label ?? code;
@@ -189,6 +192,26 @@ export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, avail
                         <option value={1}>Последовательно</option>
                         <option value={0}>Параллельно</option>
                       </select>
+                    </div>
+
+                    {/* Output — что выходит из этапа */}
+                    <div>
+                      <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 3 }}>
+                        Результат этапа (что выходит) {row.sort_order === maxOrder && <span style={{ color: "#7c3aed", fontWeight: 600 }}>— последний этап</span>}
+                      </label>
+                      <input
+                        value={row.output_name ?? ""}
+                        onChange={e => update(row._key, "output_name", e.target.value)}
+                        placeholder={row.sort_order === maxOrder
+                          ? `${productName?.trim() || "конечный продукт"} (авто)`
+                          : "полуфабрикат, напр.: Плата запаянная"}
+                        style={{ fontSize: 12, width: "100%", padding: "4px 8px" }}
+                      />
+                      {row.sort_order !== maxOrder && (
+                        <div style={{ fontSize: 10.5, color: "var(--text-muted)", marginTop: 2 }}>
+                          Станет входом следующего этапа: «взять {row.output_name.trim() || "результат"} + добавить компоненты»
+                        </div>
+                      )}
                     </div>
 
                     {/* Components */}

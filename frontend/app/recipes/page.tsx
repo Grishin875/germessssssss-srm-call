@@ -520,8 +520,10 @@ export default function RecipesPage() {
           board_side: stageType === "smd" ? (row.board_side || undefined) : undefined,
         });
       }));
-      // 2. Save stages
+      // 2. Save stages. Результат последнего этапа по умолчанию = само изделие
+      // (конечный продукт), промежуточных — что ввёл пользователь (полуфабрикат).
       const validStages = cpStages.filter(s => s.stage_type);
+      const maxOrder = validStages.length ? Math.max(...validStages.map(s => s.sort_order)) : 0;
       await Promise.all(validStages.map(s => api.createRecipeStage({
         product_name: pname,
         stage_name: s.stage_name.trim() || s.stage_type,
@@ -529,6 +531,7 @@ export default function RecipesPage() {
         sort_order: s.sort_order,
         required_role: s.required_role || undefined,
         depends_on_previous: s.depends_on_previous,
+        output_name: (s.output_name ?? "").trim() || (s.sort_order === maxOrder ? pname : undefined),
       })));
       setShowCreateProduct(false);
       setCpProductName(""); setCpRows([emptyRow()]); setProductType("SMD"); setCpStages([]);
@@ -771,11 +774,26 @@ export default function RecipesPage() {
                                   {systemRoles.find(r => r.code === rs.required_role)?.label || rs.required_role}
                                 </span>
                               )}
-                              {rs.output_name && (
-                                <span title="Результат этапа — станет входом следующего" style={{ fontSize: 11, fontWeight: 600, padding: "1px 8px", borderRadius: 10, background: "#8b5cf618", color: "#7c3aed" }}>
-                                  → 📦 {rs.output_name}
-                                </span>
-                              )}
+                              {(() => {
+                                const stagesOfProduct = rsByProduct[product] || [];
+                                const maxSort = Math.max(...stagesOfProduct.map(s => s.sort_order));
+                                const isLast = rs.sort_order === maxSort;
+                                if (rs.output_name) {
+                                  return (
+                                    <span title="Результат этапа — станет входом следующего" style={{ fontSize: 11, fontWeight: 600, padding: "1px 8px", borderRadius: 10, background: "#8b5cf618", color: "#7c3aed" }}>
+                                      → 📦 {rs.output_name}
+                                    </span>
+                                  );
+                                }
+                                if (isLast) {
+                                  return (
+                                    <span title="Последний этап — выпускает конечный продукт (автоматически)" style={{ fontSize: 11, fontWeight: 600, padding: "1px 8px", borderRadius: 10, background: "#8b5cf610", color: "#8b5cf6", border: "1px dashed #8b5cf655" }}>
+                                      → 📦 {product} <span style={{ opacity: 0.7 }}>(авто)</span>
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
                               {rs.description && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{rs.description}</span>}
                               {hasPermission("recipes.edit") && (<>
                                 <button
@@ -993,6 +1011,7 @@ export default function RecipesPage() {
               stageTypes={stageTypes}
               systemRoles={systemRoles}
               availableComponents={cpRows.filter(r => r.component_name.trim()).map(r => r.component_name.trim())}
+              productName={cpProductName}
             />
           </div>
 

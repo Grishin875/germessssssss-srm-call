@@ -185,7 +185,8 @@ def _strip_stage_id(comps: list) -> list:
     return [{k: v for k, v in c.items() if k != "stage_id"} for c in comps]
 
 
-def _assign_stage_components(r_stages, all_comps: list, planned_qty, skipped_ids=None) -> list:
+def _assign_stage_components(r_stages, all_comps: list, planned_qty, skipped_ids=None,
+                             final_output: str = None) -> list:
     """Разложить компоненты рецептуры по этапам + связать этапы по входу/выходу.
 
     Правила:
@@ -199,14 +200,17 @@ def _assign_stage_components(r_stages, all_comps: list, planned_qty, skipped_ids
       одного уровня чужих выходов не получают; несколько параллельных выходов
       (плата + корпус) доставляются следующему уровню все вместе; через
       непотребляющие этапы (контроль/склад) выход «протаскивается»; после
-      доставки на уровень L выход считается потреблённым и дальше не дублируется.
-    Возвращает список (rs, stage_components) в порядке r_stages."""
+      доставки на уровень L выход считается потреблённым и дальше не дублируется;
+    - final_output (обычно название изделия): этапы ПОСЛЕДНЕГО уровня без явного
+      output_name выпускают конечный продукт — это отображается на этапе заказа.
+    Возвращает список (rs, stage_components, effective_output) в порядке r_stages."""
     skipped_ids = skipped_ids or set()
     # Компоненты пропущенных этапов не нужны вовсе (этап осознанно не выполняется).
     all_comps = [c for c in all_comps if not c.get("stage_id") or c["stage_id"] not in skipped_ids]
     # Висячая привязка (этап удалён из рецептуры) трактуется как «без привязки» —
     # иначе компонент молча исчез бы со всех этапов.
     valid_ids = {rs["id"] for rs in r_stages}
+    max_level = max(((rs["sort_order"] or 0) for rs in r_stages), default=0)
 
     def _bound(c):
         return bool(c.get("stage_id")) and c["stage_id"] in valid_ids
@@ -243,9 +247,11 @@ def _assign_stage_components(r_stages, all_comps: list, planned_qty, skipped_ids
             comps.insert(0, {"name": o["name"], "qty": float(planned_qty or 0),
                              "source": "stage_output", "production_type": ""})
             o["consumed_at"] = level
-        out.append((rs, comps))
-
         new_out = (rs.get("output_name") or "").strip()
+        # Этап последнего уровня без явного результата выпускает конечный продукт.
+        effective_output = new_out or ((final_output or "").strip() if level == max_level else "") or None
+        out.append((rs, comps, effective_output))
+
         if new_out:
             pending.append({"name": new_out, "sort": level, "consumed_at": None})
     return out
@@ -886,7 +892,8 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
         r_stages = [rs for rs in r_stages if rs["id"] not in skipped_ids]
     if r_stages:
         min_sort = min((rs["sort_order"] or 0) for rs in r_stages)
-        for rs, stage_components in _assign_stage_components(r_stages, stage_comps, planned_qty, skipped_ids):
+        for rs, stage_components, eff_output in _assign_stage_components(
+                r_stages, stage_comps, planned_qty, skipped_ids, final_output=product_name):
             db.add(OrderStage(
                 order_id=order_id, order_item_id=order_item_id,
                 stage_type=rs["stage_type"] or "assembly",
@@ -898,7 +905,7 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
                 transfer_qty=rs["transfer_qty"] or 0,
                 instructions=rs["instructions"],
                 components_json=json.dumps(stage_components, ensure_ascii=False),
-                output_name=(rs["output_name"] or "").strip() or None,
+                output_name=eff_output,
                 comment=rs["description"],
             ))
     else:
@@ -906,6 +913,7 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
             order_id=order_id, order_item_id=order_item_id, stage_type="assembly",
             stage_name="Сборка", status="pending", sort_order=0,
             components_json=json.dumps(_strip_stage_id(stage_comps), ensure_ascii=False),
+            output_name=(product_name or "").strip() or None,
         ))
     types_rows = (await db.execute(text(
         "SELECT DISTINCT production_type FROM recipes "
@@ -1410,7 +1418,9 @@ async def start_order(order_id: int, request: Request):
         if recipe_stages:
             min_sort = min((rs["sort_order"] or 0) for rs in recipe_stages)
             # Раскладка: явная привязка (stage_id) + эвристика; выход этапа → вход следующего
-            for rs, stage_components in _assign_stage_components(recipe_stages, all_components, order.planned_qty, _skipped):
+            for rs, stage_components, eff_output in _assign_stage_components(
+                    recipe_stages, all_components, order.planned_qty, _skipped,
+                    final_output=order.product_name):
                 db.add(OrderStage(
                     order_id=order_id,
                     stage_type=rs["stage_type"] or "assembly",
@@ -1422,7 +1432,7 @@ async def start_order(order_id: int, request: Request):
                     transfer_qty=rs["transfer_qty"] or 0,
                     instructions=rs["instructions"],
                     components_json=json.dumps(stage_components, ensure_ascii=False),
-                    output_name=(rs["output_name"] or "").strip() or None,
+                    output_name=eff_output,
                     comment=rs["description"],
                 ))
         else:
@@ -1433,6 +1443,7 @@ async def start_order(order_id: int, request: Request):
                 status="pending",
                 sort_order=0,
                 components_json=json.dumps(_strip_stage_id(all_components), ensure_ascii=False),
+                output_name=(order.product_name or "").strip() or None,
             ))
         await db.commit()
 
@@ -2406,7 +2417,8 @@ async def generate_stages(order_id: int, request: Request):
         n = 0
         if rstages:
             min_sort = min((rs["sort_order"] or 0) for rs in rstages)
-            for rs, stage_comps in _assign_stage_components(rstages, all_components, pqty, _skipped):
+            for rs, stage_comps, eff_output in _assign_stage_components(
+                    rstages, all_components, pqty, _skipped, final_output=pname):
                 db.add(OrderStage(
                     order_id=order_id, order_item_id=oiid,
                     stage_type=rs["stage_type"] or "assembly", stage_name=rs["stage_name"],
@@ -2417,7 +2429,7 @@ async def generate_stages(order_id: int, request: Request):
                     transfer_qty=rs["transfer_qty"] if rs["transfer_qty"] is not None else 0,
                     instructions=rs["instructions"],
                     components_json=json.dumps(stage_comps, ensure_ascii=False),
-                    output_name=(rs["output_name"] or "").strip() or None,
+                    output_name=eff_output,
                     comment=rs["description"],
                 ))
                 n += 1
@@ -2426,6 +2438,7 @@ async def generate_stages(order_id: int, request: Request):
                 order_id=order_id, order_item_id=oiid,
                 stage_type="assembly", stage_name="Сборка", status="pending", sort_order=0,
                 components_json=json.dumps(_strip_stage_id(all_components), ensure_ascii=False),
+                output_name=(pname or "").strip() or None,
             ))
             n = 1
         return n
