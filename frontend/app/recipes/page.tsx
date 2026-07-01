@@ -57,10 +57,11 @@ function StockBadge({ stock }: { stock?: number }) {
   return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{n}</span>;
 }
 
-function ComponentSearch({ value, onChange, components }: {
+function ComponentSearch({ value, onChange, components, placeholder = "Выберите со склада…" }: {
   value: string;
   onChange: (name: string) => void;
   components: Component[];
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [browse, setBrowse] = useState(false);   // режим «просмотр всего списка» (по стрелке ▾)
@@ -169,7 +170,7 @@ function ComponentSearch({ value, onChange, components }: {
         value={query}
         onChange={e => { setQuery(e.target.value); onChange(e.target.value); setBrowse(false); setOpen(true); updatePosition(); }}
         onFocus={() => { setBrowse(!query); setOpen(true); updatePosition(); }}
-        placeholder="Выберите со склада…"
+        placeholder={placeholder}
         style={{ fontSize: 13, minWidth: 180, paddingRight: 28 }}
       />
       <button
@@ -294,6 +295,7 @@ export default function RecipesPage() {
   const [recipeStages, setRecipeStages] = useState<RecipeStage[]>([]);
   const [allCases, setAllCases] = useState<Case[]>([]);
   const [catalog, setCatalog] = useState<import("../../lib/api").ProductCatalogItem[]>([]);
+  const [finishedGoods, setFinishedGoods] = useState<import("../../lib/api").FinishedGood[]>([]);
   const recipeImportRef = useRef<HTMLInputElement>(null);
   const [importingRecipe, setImportingRecipe] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -357,11 +359,16 @@ export default function RecipesPage() {
   async function load() {
     setFetching(true);
     try {
-      const [r, rc, rs, cat] = await Promise.all([api.getRecipes(), api.getRecipeCases(), api.getRecipeStages(), api.getCatalog({ active_only: true }).catch(() => [])]);
+      const [r, rc, rs, cat, fg] = await Promise.all([
+        api.getRecipes(), api.getRecipeCases(), api.getRecipeStages(),
+        api.getCatalog({ active_only: true }).catch(() => []),
+        api.getFinishedGoods().catch(() => []),
+      ]);
       setRecipes(r);
       setRecipeCases(rc);
       setRecipeStages(rs);
       setCatalog(cat);
+      setFinishedGoods(fg);
     } catch {}
     setFetching(false);
   }
@@ -582,6 +589,13 @@ export default function RecipesPage() {
 
   // Изделия = из рецептур + из каталога (двусторонняя связь рецептура↔каталог)
   const products = [...new Set([...recipes.map(r => r.product_name), ...catalog.map(c => c.name)])].sort();
+
+  // Полуфабрикаты (для source='product'): изделия с их доступным остатком на складе ГП.
+  const fgByName: Record<string, number> = {};
+  finishedGoods.forEach(f => { fgByName[f.product_name.trim().toLowerCase()] = f.available_qty ?? f.good_qty ?? 0; });
+  const productComponents: Component[] = products.map((name, i) => ({
+    id: -(i + 1), name, stock: fgByName[name.trim().toLowerCase()] ?? 0,
+  } as Component));
   const types = [...new Set(recipes.map(r => r.production_type))];
 
   const filtered = recipes.filter(r => {
@@ -1049,12 +1063,20 @@ export default function RecipesPage() {
         <div className="space-y-3">
           {error && <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</div>}
           <div>
-            <label>Компонент (склад) *</label>
+            <label>{form.source === "product" ? "Полуфабрикат (изделие) *" : "Компонент (склад) *"}</label>
             <ComponentSearch
               value={form.component_name}
               onChange={v => setForm(f => ({ ...f, component_name: v, warehouse_component_name: f.warehouse_component_name || v }))}
-              components={allComponents}
+              components={form.source === "product"
+                ? productComponents.filter(p => p.name.trim().toLowerCase() !== form.product_name.trim().toLowerCase())
+                : allComponents}
+              placeholder={form.source === "product" ? "Выберите полуфабрикат (изделие)…" : "Выберите со склада…"}
             />
+            {form.source === "product" && (
+              <div style={{ fontSize: 11, color: "#7c3aed", marginTop: 4 }}>
+                📦 Список — изделия из рецептуры/каталога; число справа — доступный остаток на складе готовой продукции.
+              </div>
+            )}
           </div>
           <div>
             <label>Изделие *</label>

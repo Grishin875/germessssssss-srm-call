@@ -1460,6 +1460,9 @@ export interface FinishedGood {
   good_qty: number;
   defect_qty: number;
   total_qty: number;
+  reserved?: number;
+  shipped_qty?: number;
+  available_qty?: number;   // good_qty − отгружено (считается на чтении)
   updated_at: string;
 }
 
