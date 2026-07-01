@@ -122,7 +122,7 @@ export default function ReservePage() {
           </p>
         </div>
 
-        <Card>
+        <Card overflowVisible>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
             <div style={{ flex: "2 1 320px" }}>
               <label>Изделие (спецификация)</label>

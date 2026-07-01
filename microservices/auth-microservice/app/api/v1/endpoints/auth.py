@@ -20,7 +20,10 @@ def _get_db(request: Request) -> AsyncSession:
 
 
 def _get_user(request: Request) -> User:
-    return request.state.current_user
+    user = request.state.current_user
+    if not user:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+    return user
 
 
 # ── Public ──────────────────────────────────────────────────────────────────
@@ -100,23 +103,32 @@ async def admin_reset_password(body: AdminResetPasswordRequest, request: Request
 
 @router.get("/users", response_model=List[UserOut])
 async def list_users(request: Request, include_inactive: str = "0"):
+    # Любой авторизованный пользователь может получить СПРАВОЧНИК людей — он нужен
+    # для чата (участники/ЛС), назначения руководителей заказа и @упоминаний.
+    # Полное управление (create/update/delete) и карты прав остаются только у admin.
     user = _get_user(request)
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+    is_admin = user.role == "admin"
     db = _get_db(request)
     from sqlalchemy import select
     from app.models.user import User as UserModel
     from app.services.permissions import resolve_permissions
     q = select(UserModel)
-    if include_inactive not in ("1", "true"):
+    # Не-админ видит только активных; include_inactive работает лишь для admin.
+    if not is_admin or include_inactive not in ("1", "true"):
         q = q.where(UserModel.is_active == True)
     q = q.order_by(UserModel.is_active.desc(), UserModel.created_at.desc())
     result = await db.execute(q)
     users = result.scalars().all()
     for u in users:
         deps = u.departments_access if isinstance(u.departments_access, list) else []
-        u.departments_access = deps
-        u.user_permissions = resolve_permissions(u.role, deps, u.user_permissions)
+        if is_admin:
+            u.departments_access = deps
+            u.user_permissions = resolve_permissions(u.role, deps, u.user_permissions)
+        else:
+            # Не-админам отдаём только справочные поля (id/имя/роль/статус),
+            # без карт прав и доступов к отделам.
+            u.departments_access = []
+            u.user_permissions = {}
     return users
 
 

@@ -654,6 +654,57 @@ async def delete_product_full(request: Request):
     return {"success": True, "product_name": name, "deleted": deleted}
 
 
+@router.post("/recipes/product/rename")
+async def rename_product_full(request: Request):
+    """Переименовать изделие целиком: каскадно обновить product_name во всех таблицах,
+    где идентичность изделия хранится строкой (FK нет). Это единственный корректный
+    способ переименования — PATCH /catalog имя больше не меняет (иначе рецептура осиротеет)."""
+    _perm(request, "recipes.edit")
+    db = _db(request)
+    body = await request.json()
+    old = (body.get("old_name") or "").strip()
+    new = (body.get("new_name") or "").strip()
+    if not old or not new:
+        raise HTTPException(400, "Нужны old_name и new_name")
+    if _norm(old) == _norm(new):
+        return {"success": True, "old_name": old, "new_name": new, "updated": {}}
+    old_n, new_n = _norm(old), _norm(new)
+    # Коллизия: новое имя не должно уже принадлежать ДРУГОМУ изделию в каталоге.
+    clash = (await db.execute(
+        select(func.count()).select_from(ProductCatalog)
+        .where(func.lower(func.trim(ProductCatalog.name)) == new_n)
+    )).scalar() or 0
+    if clash:
+        raise HTTPException(409, f"Изделие «{new}» уже существует")
+    updated = {}
+    # Неуникальные по имени таблицы — простое обновление.
+    plain = [
+        ("recipes", Recipe, Recipe.product_name),
+        ("stages", RecipeStage, RecipeStage.product_name),
+        ("cases", RecipeCase, RecipeCase.product_name),
+        ("attachments", RecipeAttachment, RecipeAttachment.product_name),
+    ]
+    for label, model, col in plain:
+        res = await db.execute(
+            update(model).where(func.lower(func.trim(col)) == old_n).values({col.key: new})
+        )
+        updated[label] = res.rowcount
+    # Уникальные по имени таблицы — на всякий случай снести возможный «осиротевший»
+    # дубликат нового имени, затем переименовать (защита от UNIQUE-violation → 500).
+    for label, model, col in [
+        ("registry", RecipeProductOrder, RecipeProductOrder.product_name),
+        ("finished", FinishedGoods, FinishedGoods.product_name),
+        ("catalog", ProductCatalog, ProductCatalog.name),
+    ]:
+        await db.execute(delete(model).where(func.lower(func.trim(col)) == new_n))
+        res = await db.execute(
+            update(model).where(func.lower(func.trim(col)) == old_n).values({col.key: new})
+        )
+        updated[label] = res.rowcount
+    await db.commit()
+    return {"success": True, "old_name": old, "new_name": new, "updated": updated}
+
+
 @router.delete("/recipes/{recipe_id}")
 async def delete_recipe(recipe_id: int, request: Request):
     _perm(request, "recipes.edit")
@@ -772,12 +823,15 @@ async def update_catalog_item(item_id: int, request: Request):
     item = (await db.execute(select(ProductCatalog).where(ProductCatalog.id == item_id))).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Не найдено")
-    allowed = ["name", "sku", "category", "description", "unit", "is_active",
+    # ВНИМАНИЕ: name здесь НЕ меняется — переименование только через
+    # POST /recipes/product/rename (каскад по всем name-keyed таблицам).
+    allowed = ["sku", "category", "description", "unit", "is_active",
                "needs_smd", "is_receiver", "needs_assembly"]
     for k in allowed:
         if k in body:
             setattr(item, k, body[k])
     await db.flush()
+    await db.refresh(item)  # onupdate updated_at — во избежание implicit-IO при сериализации
     return _m(item)
 
 

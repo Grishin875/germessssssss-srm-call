@@ -94,7 +94,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     <div className="flex h-screen" style={{ background: "transparent" }}>
       <Sidebar mobileOpen={menuOpen} onClose={() => setMenuOpen(false)} />
       {menuOpen && <div className="sidebar-backdrop mobile-only" onClick={() => setMenuOpen(false)} />}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <header
           className="glass"
           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 40px", borderRadius: 0, borderLeft: "none", borderRight: "none", borderTop: "none", flexShrink: 0, gap: 8, position: "sticky", top: 0, zIndex: 50 }}
@@ -126,8 +126,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </header>
         <GlobalSearch />
         <HotkeysHelp />
-        <main className="flex-1 overflow-y-auto">
-          <div className="ac animate-fadeIn" style={{ maxWidth: 1280, margin: "0 auto", padding: "32px 40px" }}>{children}</div>
+        <main className="flex-1 overflow-y-auto" style={{ overflowX: "auto" }}>
+          <div className="ac animate-fadeIn" style={{ maxWidth: 1280, width: "100%", minWidth: 0, margin: "0 auto", padding: "32px 40px" }}>{children}</div>
         </main>
       </div>
     </div>

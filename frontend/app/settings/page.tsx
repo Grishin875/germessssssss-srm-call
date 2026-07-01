@@ -136,6 +136,7 @@ export default function SettingsPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
             {[
               { href: "/settings/system", icon: "⚙️", title: "Система", desc: "Этапы, роли, статусы, приоритеты, SLA", show: true },
+              { href: "/settings/system?tab=roles", icon: "🧑‍💼", title: "Роли", desc: "Роли пользователей и права доступа", show: user.role === "admin" },
               { href: "/settings/fields", icon: "🏷️", title: "Кастомные поля", desc: "Доп. поля заказов", show: true },
               { href: "/catalog", icon: "📦", title: "Каталог изделий", desc: "Справочник продукции", show: true },
               { href: "/users", icon: "👥", title: "Пользователи", desc: "Учётные записи и роли", show: user.role === "admin" },

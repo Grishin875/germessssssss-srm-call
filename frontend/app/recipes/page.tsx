@@ -77,19 +77,41 @@ function ComponentSearch({ value, onChange, components }: {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  // Пока меню открыто — держим позицию актуальной при скролле/ресайзе (fixed-координаты «стареют»).
+  useEffect(() => {
+    if (!open) return;
+    const onMove = () => updatePosition();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   function updatePosition() {
     if (!inputRef.current) return;
     const rect = inputRef.current.getBoundingClientRect();
+    const GAP = 8, MENU_MAX = 220;
+    // Ширина не больше вьюпорта; left зажат так, чтобы меню не уезжало за правый край.
+    const width = Math.min(Math.max(rect.width, 260), window.innerWidth - 2 * GAP);
+    const left = Math.max(GAP, Math.min(rect.left, window.innerWidth - width - GAP));
+    // Если снизу мало места — раскрываем вверх.
+    const below = window.innerHeight - rect.bottom;
+    const above = rect.top;
+    const openUp = below < Math.min(MENU_MAX, 160) && above > below;
+    const maxHeight = Math.max(120, Math.min(MENU_MAX, (openUp ? above : below) - GAP));
     setDropdownStyle({
       position: "fixed",
-      top: rect.bottom + 2,
-      left: rect.left,
-      width: Math.max(rect.width, 260),
+      left,
+      width,
       zIndex: 99999,
-      background: "var(--bg, #fff)",
+      ...(openUp ? { bottom: window.innerHeight - rect.top + 2 } : { top: rect.bottom + 2 }),
+      background: "var(--bg-secondary, #fff)",
       border: "1px solid var(--border, #e5e7eb)",
       borderRadius: 6,
-      maxHeight: 220,
+      maxHeight,
       overflowY: "auto",
       boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
     });
@@ -631,6 +653,21 @@ export default function RecipesPage() {
                         }}
                         style={{ fontSize: 12, fontWeight: 600, color: "var(--primary)", background: "none", border: "none", cursor: "pointer" }}
                       >+ Корпус</button>
+                      <button
+                        onClick={async () => {
+                          const nn = prompt("Новое название изделия:", product);
+                          if (nn === null) return;
+                          const t = nn.trim();
+                          if (!t || t === product) return;
+                          try {
+                            await api.renameProduct(product, t);
+                            toast.success("Изделие переименовано");
+                            load();
+                          } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+                        }}
+                        title="Переименовать изделие (каскадно во всех таблицах)"
+                        style={{ fontSize: 12, fontWeight: 600, color: "var(--primary)", background: "none", border: "none", cursor: "pointer" }}
+                      >✎ Переименовать</button>
                       <button
                         onClick={async () => {
                           if (!confirm(`Удалить изделие «${product}» полностью? Будут удалены все компоненты, этапы, корпуса и запись в каталоге. Действие необратимо.`)) return;

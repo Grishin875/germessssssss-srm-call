@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_rejection_photo VARCHAR(500)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS skipped_stage_ids TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS parent_order_id INTEGER",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS est_minutes INTEGER",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS checklist TEXT DEFAULT '[]'",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS result_photo VARCHAR(500)",

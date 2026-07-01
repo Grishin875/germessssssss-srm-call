@@ -60,6 +60,7 @@ export default function OrderDetailPage() {
   const [customFieldEditing, setCustomFieldEditing] = useState(false);
   const [customFieldDraft, setCustomFieldDraft] = useState<Record<string, string>>({});
   const [order, setOrder] = useState<Order & { batches?: Batch[]; otk_batches?: OtkBatch[] } | null>(null);
+  const [children, setChildren] = useState<{ id: number; product_name: string; planned_qty: number; status: string }[]>([]);
   const [stages, setStages] = useState<OrderStage[]>([]);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [allUsers, setAllUsers] = useState<import("../../../lib/api").User[]>([]);
@@ -123,6 +124,7 @@ export default function OrderDetailPage() {
   useEffect(() => {
     if (!user || !id) return;
     api.getOrder(id).then(setOrder).catch(console.error).finally(() => setFetching(false));
+    api.getOrderChildren(id).then(setChildren).catch(() => {});
     api.getOperators().then(setOperators).catch(console.error);
     api.getUsers().then(setAllUsers).catch(console.error);
     api.getRecipes().then(setAllRecipes).catch(console.error);
@@ -568,6 +570,15 @@ export default function OrderDetailPage() {
           </span>
           <Badge status={order.status} />
           {order.priority && <PriorityBadge priority={order.priority} />}
+          {order.parent_order_id && (
+            <span
+              onClick={() => router.push(`/orders/${order.parent_order_id}`)}
+              title="Это под-заказ на полуфабрикат — часть родительского заказа"
+              style={{ cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, background: "#8b5cf620", color: "#7c3aed" }}
+            >
+              📦 полуфабрикат для №{order.parent_order_id}
+            </span>
+          )}
           {!!order.otk_attempts && order.otk_attempts > 0 && (
             <span title="Количество возвратов с ОТК" style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, background: order.otk_attempts >= 3 ? "#ef444420" : "#f59e0b20", color: order.otk_attempts >= 3 ? "#ef4444" : "#f59e0b" }}>
               ОТК-возвраты: {order.otk_attempts}
@@ -606,6 +617,25 @@ export default function OrderDetailPage() {
           <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
             <span style={{ color: "var(--text-muted)" }}>Руководители проекта: </span>
             {order.manager_names.join(", ")}
+          </div>
+        )}
+
+        {children.length > 0 && (
+          <div style={{ padding: "14px 18px", borderRadius: 10, background: "#8b5cf610", border: "1px solid #8b5cf640" }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: "#7c3aed", marginBottom: 8 }}>
+              📦 Под-заказы на полуфабрикаты ({children.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {children.map(ch => (
+                <div key={ch.id}
+                  onClick={() => router.push(`/orders/${ch.id}`)}
+                  style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "6px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>№{ch.id}</span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{ch.product_name} × {ch.planned_qty}</span>
+                  <Badge status={ch.status} />
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -975,9 +1005,13 @@ export default function OrderDetailPage() {
                               {stage.components.map((c, ci) => (
                                 <span key={ci} style={{
                                   fontSize: 12, padding: "2px 8px", borderRadius: 6,
-                                  background: "var(--bg-secondary)", color: "var(--text-secondary)",
-                                  border: "1px solid var(--border)",
-                                }}>{c.name} × {c.qty}</span>
+                                  background: c.source === "product" ? "#8b5cf615" : "var(--bg-secondary)",
+                                  color: c.source === "product" ? "#7c3aed" : "var(--text-secondary)",
+                                  border: c.source === "product" ? "1px solid #8b5cf655" : "1px solid var(--border)",
+                                  fontWeight: c.source === "product" ? 600 : 400,
+                                }} title={c.source === "product" ? "Полуфабрикат — взять готовым со склада ГП" : undefined}>
+                                  {c.source === "product" ? "📦 " : ""}{c.name} × {c.qty}
+                                </span>
                               ))}
                             </div>
                           </div>

@@ -130,6 +130,13 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 
+/* ─── Защита от горизонтального «уезда» страницы ─────────────────────────────
+   Ничто не должно делать документ шире вьюпорта: страница никогда не едет
+   вбок, широкий контент скроллится внутри своих контейнеров, а не толкает
+   весь макет за экран. (Восстанавливает поведение из legacy styles.css.) */
+html, body { max-width: 100%; overflow-x: hidden; }
+img, video, canvas { max-width: 100%; height: auto; }
+
 body {
   font-family: var(--font-body);
   background: var(--bg);

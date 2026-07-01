@@ -160,6 +160,10 @@ def _component_matches_stage(source: str, stage_type: str, production_type: str 
     If production_type is set (new-style components), match exactly.
     Otherwise fall back to source-based heuristic.
     """
+    # Полуфабрикат (под-изделие, source='product') берётся со склада ГП на этапе сборки —
+    # показываем его монтажнику именно там: «взять полуфабрикат X + допаять компоненты Y, Z».
+    if source == "product":
+        return stage_type in ("assembly", "assembly_rea")
     if production_type:
         return _STAGE_TO_PRODUCTION_TYPE.get(stage_type) == production_type
     mapping = {
@@ -726,7 +730,19 @@ async def get_order(order_id: int, request: Request):
     return d
 
 
-async def _compute_order_demand(db, order) -> dict:
+@router.get("/orders/{order_id}/children")
+async def get_order_children(order_id: int, request: Request):
+    """Под-заказы на полуфабрикаты (source='product'), созданные под этот заказ."""
+    _perm(request, "orders.view")
+    db = _db(request)
+    rows = (await db.execute(
+        select(Order).where(Order.parent_order_id == order_id).order_by(Order.id)
+    )).scalars().all()
+    return [
+        {"id": o.id, "product_name": o.product_name, "planned_qty": o.planned_qty,
+         "status": o.status, "created_at": str(o.created_at) if o.created_at else None}
+        for o in rows
+    ]
     """Суммарная потребность заказа в компонентах — как в create_order.
 
     Проходит по позициям заказа (order_items); если их нет (legacy-заказ) — считает
@@ -847,6 +863,39 @@ def _ceil_int(x: float) -> int:
     return xi + 1 if x > xi else xi
 
 
+async def _auto_pr_for_shortage(db, order_id: int, product_name: str, missing: list, actor) -> None:
+    """Автозаявка на закупку (черновик) при нехватке компонентов на складе.
+    Идемпотентно по order_ref='AUTO-{order_id}'. Пишет в таблицы склада той же БД
+    через text() (как и резерв). Никогда не ломает создание заказа (try/except)."""
+    try:
+        deficits = []
+        for m in (missing or []):
+            q = _ceil_int(float(m.get("required", 0)) - float(m.get("available", 0)))
+            if q > 0:
+                deficits.append((m.get("name"), q))
+        if not deficits:
+            return
+        ref = f"AUTO-{order_id}"
+        exists = (await db.execute(text(
+            "SELECT 1 FROM purchase_requests WHERE order_ref=:r LIMIT 1"
+        ), {"r": ref})).scalar_one_or_none()
+        if exists:
+            return
+        cb = getattr(actor, "full_name", None) or getattr(actor, "username", None) or "auto"
+        pr_id = (await db.execute(text(
+            "INSERT INTO purchase_requests (status, note, order_ref, created_by) "
+            "VALUES ('draft', :note, :ref, :cb) RETURNING id"
+        ), {"note": f"Автозаявка по дефициту заказа #{order_id} ({product_name})",
+            "ref": ref, "cb": str(cb)[:100]})).scalar_one()
+        for name, qty in deficits:
+            await db.execute(text(
+                "INSERT INTO purchase_request_items (request_id, component_name, quantity) "
+                "VALUES (:rid, :cn, :q)"
+            ), {"rid": pr_id, "cn": name, "q": qty})
+    except Exception:
+        logger.exception("auto PR for shortage failed (order_id=%s)", order_id)
+
+
 async def _create_order_core(db, items, *, priority, deadline, comment, assigned_department,
                              managers, skipped_ids, received_date, shipment_date, actor,
                              parent_order_id=None, depth=0, chain=None):
@@ -885,6 +934,7 @@ async def _create_order_core(db, items, *, priority, deadline, comment, assigned
         positions=json.dumps([{"name": n, "qty": q} for n, q in items], ensure_ascii=False),
         received_date=received_date, shipment_date=shipment_date,
         skipped_stage_ids=skipped_json,
+        parent_order_id=parent_order_id,
     )
     db.add(order)
     await db.flush()
@@ -916,6 +966,10 @@ async def _create_order_core(db, items, *, priority, deadline, comment, assigned
                 "VALUES ('RESERVE', :cn, :qty, :note, :oid)"
             ), {"cn": d["name"], "qty": d["required"],
                 "note": f"Резерв под заказ #{order.id}", "oid": f"{op_prefix}-{idx}"})
+
+    # Дефицит прямых складских компонентов → черновик заявки на закупку (MRP-петля).
+    if not can_produce and missing_components:
+        await _auto_pr_for_shortage(db, order.id, header_name, missing_components, actor)
 
     # ── Суб-изделия (source='product'): резерв ГП + авто под-заказ на дефицит ──
     child_orders = []
@@ -1027,6 +1081,8 @@ async def update_order(order_id: int, body: OrderUpdate, request: Request):
     if not update_data:
         raise HTTPException(400, "Нет данных для обновления")
     old = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not old:
+        raise HTTPException(404, "Заказ не найден")
     old_status = old.status if old else None
     new_status = update_data.get("status")
     if new_status is not None and new_status != old_status:

@@ -41,6 +41,12 @@ export default function SystemSettingsPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("stage-types");
+  // Deep-link: /settings/system?tab=roles открывает нужную вкладку (в эффекте — чтобы
+  // не было расхождения гидратации между сервером и клиентом).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+    if (t && TABS.some(x => x.key === t)) setTab(t);
+  }, []);
 
   const [stageTypes, setStageTypes] = useState<StageTypeItem[]>([]);
   const [roles, setRoles] = useState<SystemRoleItem[]>([]);

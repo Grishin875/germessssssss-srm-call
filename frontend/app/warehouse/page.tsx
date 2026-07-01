@@ -1038,8 +1038,19 @@ export default function WarehousePage() {
           ))}
           <div>
             <label>Категория</label>
-            <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} list="cats-list" />
-            <datalist id="cats-list">{categories.map(c => <option key={c} value={c} />)}</datalist>
+            <div style={{ display: "flex", gap: 8 }}>
+              {categories.length > 0 && (
+                <select
+                  value={categories.includes(form.category) ? form.category : ""}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">— выбрать —</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              )}
+              <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder={categories.length > 0 ? "или новая…" : "Категория"} style={{ flex: 1 }} />
+            </div>
           </div>
           <div>
             <label>Блок</label>

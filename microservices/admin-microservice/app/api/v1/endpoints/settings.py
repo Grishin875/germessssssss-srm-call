@@ -64,6 +64,7 @@ async def update_stage_type(item_id: int, request: Request):
     for k in ["label", "color", "icon", "sort_order", "is_active"]:
         if k in body: setattr(item, k, body[k])
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     return _m(item)
 
 
@@ -122,6 +123,7 @@ async def update_system_role(item_id: int, request: Request):
     if "allowed_stage_types" in body:
         item.allowed_stage_types = json.dumps(body["allowed_stage_types"])
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     row = _m(item)
     row["allowed_stage_types"] = json.loads(row["allowed_stage_types"] or "[]")
     return row
@@ -179,6 +181,7 @@ async def update_order_status(item_id: int, request: Request):
     for k in ["label", "color", "is_terminal", "sort_order", "is_active"]:
         if k in body: setattr(item, k, body[k])
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     return _m(item)
 
 
@@ -268,6 +271,7 @@ async def update_priority(item_id: int, request: Request):
     for k in ["label", "color", "sort_weight", "is_active"]:
         if k in body: setattr(item, k, body[k])
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     return _m(item)
 
 
@@ -322,6 +326,7 @@ async def update_webhook(item_id: int, request: Request):
     if "events" in body:
         item.events = json.dumps(body["events"], ensure_ascii=False)
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     return _m(item)
 
 
@@ -551,6 +556,7 @@ async def update_sla_rule(item_id: int, request: Request):
     if "notify_roles" in body:
         item.notify_roles = json.dumps(body["notify_roles"])
     await db.flush()
+    await db.refresh(item)  # подтянуть onupdate updated_at внутри async-контекста (иначе MissingGreenlet → 500)
     d = _m(item)
     d["notify_roles"] = json.loads(d["notify_roles"] or "[]")
     return d

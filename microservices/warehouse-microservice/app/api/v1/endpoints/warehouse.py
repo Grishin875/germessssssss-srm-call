@@ -44,6 +44,13 @@ async def list_components(request: Request):
     return await warehouse_service.list_components(_db(request))
 
 
+@router.get("/low-stock")
+async def low_stock(request: Request):
+    """Компоненты ниже точки заказа (доступно <= мин. остаток)."""
+    _require_perm(request, "warehouse.view")
+    return await warehouse_service.list_low_stock(_db(request))
+
+
 @router.get("/components/by-name/{name}", response_model=ComponentOut)
 async def get_component_by_name(name: str, request: Request):
     _require_perm(request, "warehouse.view")
@@ -68,7 +75,13 @@ async def update_component(comp_id: int, body: ComponentUpdate, request: Request
     try:
         return await warehouse_service.update_component(_db(request), comp_id, body)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        low = msg.lower()
+        if "не найден" in low:
+            raise HTTPException(status_code=404, detail=msg)
+        if "уже существует" in low:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
 
 @router.delete("/components/{comp_id}")

@@ -15,27 +15,30 @@ export function DonutChart({ data, size = 140, thickness = 22 }: {
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-      <svg width={size} height={size} style={{ flexShrink: 0, transform: "rotate(-90deg)" }}>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--bg-tertiary)" strokeWidth={thickness} />
-        {total > 0 && data.map((d, i) => {
-          const len = (d.value / total) * circ;
-          const seg = (
-            <circle
-              key={i} cx={cx} cy={cy} r={r} fill="none" stroke={d.color}
-              strokeWidth={thickness} strokeDasharray={`${len} ${circ - len}`}
-              strokeDashoffset={-offset}
-              style={{ transition: "stroke-dasharray 0.6s ease, stroke-dashoffset 0.6s ease" }}
-            />
-          );
-          offset += len;
-          return seg;
-        })}
-        {/* центр */}
-        <circle cx={cx} cy={cy} r={r - thickness / 2 - 1} fill="var(--bg-secondary)" />
-      </svg>
-      <div style={{ position: "relative", marginLeft: -size + thickness, width: size, height: size, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-        <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>{total}</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>всего</div>
+      {/* Кольцо + центральная надпись поверх него (абсолютно, без хрупких отрицательных отступов) */}
+      <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+        <svg width={size} height={size} style={{ display: "block", transform: "rotate(-90deg)" }}>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--bg-tertiary)" strokeWidth={thickness} />
+          {total > 0 && data.map((d, i) => {
+            const len = (d.value / total) * circ;
+            const seg = (
+              <circle
+                key={i} cx={cx} cy={cy} r={r} fill="none" stroke={d.color}
+                strokeWidth={thickness} strokeDasharray={`${len} ${circ - len}`}
+                strokeDashoffset={-offset}
+                style={{ transition: "stroke-dasharray 0.6s ease, stroke-dashoffset 0.6s ease" }}
+              />
+            );
+            offset += len;
+            return seg;
+          })}
+          {/* центр */}
+          <circle cx={cx} cy={cy} r={r - thickness / 2 - 1} fill="var(--bg-secondary)" />
+        </svg>
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+          <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>{total}</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>всего</div>
+        </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 130 }}>
         {data.map((d, i) => (

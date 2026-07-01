@@ -6,7 +6,7 @@ import { AppLayout } from "../../components/layout/AppLayout";
 import { StatCard, Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
-import { api, Order, Task, User, MyOrder, OtkBatch, SlaViolation } from "../../lib/api";
+import { api, Order, Task, User, MyOrder, OtkBatch, SlaViolation, LowStockItem } from "../../lib/api";
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { PRODUCTION_ROLES } from "../../lib/roles";
 import { DonutChart, BarChart, Sparkline, Slice } from "../../components/ui/Charts";
@@ -68,6 +68,7 @@ export default function DashboardPage() {
   const { t } = useI18n();
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
+  const [lowStock, setLowStock] = useState<LowStockItem[]>([]);
   const [myOrders, setMyOrders] = useState<MyOrder[]>([]);
   const [otkQueue, setOtkQueue] = useState<OtkBatch[]>([]);
   const [readyShip, setReadyShip] = useState<(Order & { batches?: { batch_id: string; remaining_qty: number }[] })[]>([]);
@@ -104,6 +105,7 @@ export default function DashboardPage() {
       api.checkSlaViolations().then(setSlaViolations).catch(console.error);
       if (role === "admin" || role === "manager") {
         api.getOrdersAnalytics().then(setAnalytics).catch(console.error);
+        api.getLowStock().then(setLowStock).catch(() => {});
       }
     }
     api.getTasks().then(setTasks).catch(console.error);
@@ -537,6 +539,32 @@ export default function DashboardPage() {
                   </div>
                 </Card>
               )}
+            </div>
+          )}
+
+          {/* Низкий остаток на складе (точка заказа) */}
+          {isBoss && lowStock.length > 0 && (
+            <div
+              style={{
+                padding: "14px 18px", borderRadius: 12, marginBottom: 16,
+                background: "#ef444410", border: "1px solid #ef444440",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 18 }}>📦</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#b91c1c" }}>
+                      Низкий остаток компонентов ({lowStock.length})
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                      {lowStock.slice(0, 5).map((c) => `${c.name} (${c.available}/${c.min_stock})`).join(" · ")}
+                      {lowStock.length > 5 && ` и ещё ${lowStock.length - 5}…`}
+                    </div>
+                  </div>
+                </div>
+                <Button size="sm" variant="secondary" onClick={() => router.push("/warehouse")}>На склад</Button>
+              </div>
             </div>
           )}
 

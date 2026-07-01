@@ -7,7 +7,10 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge, PriorityBadge } from "../../components/ui/Badge";
 import { Modal } from "../../components/ui/Modal";
-import { api, Order, OtkBatch, OtkReport, RegulationProblem } from "../../lib/api";
+import { DonutChart, BarChart, Sparkline } from "../../components/ui/Charts";
+import { api, Order, OtkBatch, OtkReport, OtkAnalytics, RegulationProblem } from "../../lib/api";
+
+const OTK_BAR_COLORS = ["#6366f1", "#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#ec4899", "#14b8a6"];
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { useStageTypes } from "../../hooks/useStageTypes";
 import { toast } from "../../components/ui/Toast";
@@ -19,7 +22,12 @@ export default function OtkPage() {
   const { labelMap: STAGE_TYPE_LABELS } = useStageTypes();
   const router = useRouter();
 
-  const [tab, setTab] = useState<"pending" | "batches" | "regulations" | "reports">("pending");
+  const [tab, setTab] = useState<"pending" | "batches" | "regulations" | "reports" | "analytics">("pending");
+
+  // Аналитика качества (дашборд ОТК)
+  const [anaDays, setAnaDays] = useState(30);
+  const [analytics, setAnalytics] = useState<OtkAnalytics | null>(null);
+  const [anaFetching, setAnaFetching] = useState(false);
 
   // Order-level OTK (main workflow)
   const [pendingOrders, setPendingOrders] = useState<Order[]>([]);
@@ -64,6 +72,15 @@ export default function OtkPage() {
     if (tab === "batches") loadBatches();
     if (tab === "regulations") api.getRegulationProducts().then(setRegProducts).catch(console.error);
   }, [user, tab]);
+
+  useEffect(() => {
+    if (!user || tab !== "analytics") return;
+    setAnaFetching(true);
+    api.getOtkAnalytics(anaDays)
+      .then(setAnalytics)
+      .catch(() => setAnalytics(null))
+      .finally(() => setAnaFetching(false));
+  }, [user, tab, anaDays]);
 
   // Оператор ОТК сразу грузит партии
   useEffect(() => {
@@ -182,6 +199,7 @@ export default function OtkPage() {
     { key: "batches",     label: "Проверка партий",  show: true },
     { key: "regulations", label: "Регламенты",       show: true },
     { key: "reports",     label: "Отчёты",           show: user.role !== "operator_otk" },
+    { key: "analytics",   label: "Аналитика",        show: user.role !== "operator_otk" },
   ] as const;
 
   const resultOptions: { v: 1 | 2 | 3; label: string; color: string; bg: string }[] = [
@@ -462,6 +480,93 @@ export default function OtkPage() {
                 </Card>
               </>
             )}
+          </div>
+        )}
+
+        {tab === "analytics" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <Card>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Период:</span>
+                {[7, 30, 90].map(d => (
+                  <button key={d} onClick={() => setAnaDays(d)}
+                    style={{
+                      padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer",
+                      fontSize: 13, fontWeight: 600,
+                      background: anaDays === d ? "var(--primary)" : "var(--bg-secondary)",
+                      color: anaDays === d ? "#fff" : "var(--text-secondary)",
+                    }}>{d} дн.</button>
+                ))}
+              </div>
+            </Card>
+
+            {anaFetching && <div className="text-center py-12">Загрузка...</div>}
+            {!anaFetching && analytics && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+                  {[
+                    { label: "Проверено партий", value: analytics.kpi.batches },
+                    { label: "Годных",           value: analytics.kpi.good },
+                    { label: "Брак",             value: analytics.kpi.defect },
+                    { label: "Доля брака",       value: `${analytics.kpi.defect_rate}%` },
+                  ].map(c => (
+                    <div key={c.label} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 20px", textAlign: "center" }}>
+                      <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8, fontWeight: 500 }}>{c.label}</p>
+                      <p style={{ fontSize: 26, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.02em" }}>{c.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+                  <Card title="Годные / Брак">
+                    <DonutChart data={[
+                      { label: "Годные", value: analytics.kpi.good, color: "#10b981" },
+                      { label: "Брак",   value: analytics.kpi.defect, color: "#ef4444" },
+                    ]} />
+                  </Card>
+                  <Card title="Брак по отделам">
+                    {analytics.by_department.length === 0
+                      ? <div className="text-center py-12">Нет данных</div>
+                      : <BarChart data={analytics.by_department.map((d, i) => ({ label: d.label, value: d.defect, color: OTK_BAR_COLORS[i % OTK_BAR_COLORS.length] }))} />}
+                  </Card>
+                  <Card title="Парето причин брака">
+                    {analytics.pareto.length === 0
+                      ? <div className="text-center py-12">Нет зафиксированных дефектов</div>
+                      : <BarChart data={analytics.pareto.map(p => ({ label: p.label, value: p.value, color: "#f59e0b" }))} />}
+                  </Card>
+                  <Card title="Тренд брака по дням">
+                    {analytics.trend.length < 2
+                      ? <div className="text-center py-12">Недостаточно данных</div>
+                      : <Sparkline points={analytics.trend.map(t => t.defect)} color="#ef4444" width={280} height={64} />}
+                  </Card>
+                </div>
+
+                <Card title="Качество по отделам">
+                  {analytics.by_department.length === 0 ? (
+                    <div className="text-center py-12">Нет данных за период</div>
+                  ) : (
+                    <div style={{ overflowX: "auto" }}>
+                      <table>
+                        <thead><tr>{["Отдел", "Партий", "Выпущено", "Годных", "Брак", "Доля брака"].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {analytics.by_department.map(d => (
+                            <tr key={d.label}>
+                              <td style={{ fontWeight: 500 }}>{d.label}</td>
+                              <td>{d.batches}</td>
+                              <td>{d.released}</td>
+                              <td style={{ color: "#059669", fontWeight: 500 }}>{d.good}</td>
+                              <td style={{ color: "var(--danger)", fontWeight: 500 }}>{d.defect}</td>
+                              <td style={{ fontWeight: 600 }}>{d.rate}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Card>
+              </>
+            )}
+            {!anaFetching && !analytics && <div className="text-center py-12">Не удалось загрузить аналитику</div>}
           </div>
         )}
       </div>

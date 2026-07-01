@@ -33,6 +33,13 @@ def _to_float(v) -> float:
     return float(v) if v is not None else 0.0
 
 
+# Дебаунс reconcile: раньше он гонялся на КАЖДЫЙ GET склада (3 полных скана таблиц).
+# Теперь чтения его лишь «просят» (не чаще раза в _RECONCILE_TTL сек), а записи,
+# меняющие остаток, вызывают с force=True — инвариант чинится сразу после изменения.
+_RECONCILE_TTL = 20.0
+_last_reconcile = 0.0
+
+
 async def _get_by_name(db: AsyncSession, name: str) -> Optional[WarehouseComponent]:
     r = await db.execute(
         select(WarehouseComponent).where(func.lower(WarehouseComponent.name) == _norm(name))
@@ -107,6 +114,31 @@ async def create_component(db: AsyncSession, data: ComponentCreate) -> Warehouse
     return comp
 
 
+async def list_low_stock(db: AsyncSession) -> List[dict]:
+    """Компоненты с точкой заказа: доступный остаток (stock - reserved) <= min_stock.
+    Самые дефицитные — первыми."""
+    rows = (await db.execute(
+        select(WarehouseComponent).where(
+            WarehouseComponent.min_stock.isnot(None),
+            WarehouseComponent.min_stock > 0,
+        ).order_by(func.lower(WarehouseComponent.name))
+    )).scalars().all()
+    out = []
+    for c in rows:
+        stock = _to_float(c.stock)
+        reserved = _to_float(c.reserved)
+        available = stock - reserved
+        ms = _to_float(c.min_stock)
+        if available <= ms:
+            out.append({
+                "id": c.id, "name": c.name, "stock": stock, "reserved": reserved,
+                "available": available, "min_stock": ms, "unit": c.unit,
+                "category": c.category, "deficit": round(ms - available, 3),
+            })
+    out.sort(key=lambda x: (x["available"] - x["min_stock"]))
+    return out
+
+
 async def update_component(db: AsyncSession, comp_id: int, data: ComponentUpdate) -> WarehouseComponent:
     comp = await get_component_by_id(db, comp_id)
     if not comp:
@@ -119,6 +151,16 @@ async def update_component(db: AsyncSession, comp_id: int, data: ComponentUpdate
     # Инвариант 0 <= reserved <= stock: нельзя опустить остаток ниже зарезервированного.
     if new_stock < reserved:
         raise ValueError(f"Нельзя установить остаток {new_stock} ниже зарезервированного {reserved}")
+    # Переименование в занятое имя → чистый 409 (иначе UNIQUE-violation на name → 500).
+    if old_name.lower() != new_name.lower():
+        dup = (await db.execute(
+            select(WarehouseComponent).where(
+                func.lower(func.trim(WarehouseComponent.name)) == new_name.lower(),
+                WarehouseComponent.id != comp_id,
+            )
+        )).scalar_one_or_none()
+        if dup:
+            raise ValueError(f"Компонент с именем «{new_name}» уже существует")
     await db.execute(
         update(WarehouseComponent).where(WarehouseComponent.id == comp_id).values(
             name=new_name, stock=new_stock, category=data.category or "Разное",
@@ -131,7 +173,19 @@ async def update_component(db: AsyncSession, comp_id: int, data: ComponentUpdate
     )
     if old_name.lower() != new_name.lower():
         await db.execute(text("UPDATE recipes SET component_name=:new_name WHERE LOWER(TRIM(component_name))=LOWER(:old_name)"), {"new_name": new_name, "old_name": old_name})
-        await db.execute(text("UPDATE production_stock SET component_name=:new_name WHERE LOWER(TRIM(component_name))=LOWER(:old_name)"), {"new_name": new_name, "old_name": old_name})
+        # production_stock.component_name — UNIQUE. Если строка нового имени уже есть,
+        # сливаем количество и удаляем старую (иначе UNIQUE-violation → 500).
+        ps = {"new_name": new_name, "old_name": old_name}
+        await db.execute(text(
+            "UPDATE production_stock d SET quantity = COALESCE(d.quantity,0) + COALESCE(s.quantity,0) "
+            "FROM production_stock s WHERE LOWER(TRIM(s.component_name)) = LOWER(:old_name) "
+            "AND d.component_name = :new_name"), ps)
+        await db.execute(text(
+            "DELETE FROM production_stock s WHERE LOWER(TRIM(s.component_name)) = LOWER(:old_name) "
+            "AND EXISTS (SELECT 1 FROM production_stock d WHERE d.component_name = :new_name)"), ps)
+        await db.execute(text(
+            "UPDATE production_stock SET component_name = :new_name "
+            "WHERE LOWER(TRIM(component_name)) = LOWER(:old_name)"), ps)
         # warehouse_stock (по-складские остатки) тоже переименовываем, иначе мульти-
         # складской баланс задвоится под старым/новым именем. uq(warehouse_id, component_name)
         # обходим слиянием количеств в уже существующую строку нового имени.
@@ -541,9 +595,19 @@ async def _main_warehouse_id(db: AsyncSession) -> Optional[int]:
     return mid
 
 
-async def reconcile_stock(db: AsyncSession):
+async def reconcile_stock(db: AsyncSession, force: bool = False):
     """Поддерживает инвариант: сумма остатков по складам == warehouse_components.stock.
-    Разницу (новые компоненты, изменения через batch/reserve) относит на Основной склад."""
+    Разницу (новые компоненты, изменения через batch/reserve) относит на Основной склад.
+
+    force=False (чтения) — дебаунс: пропускаем, если reconcile уже был <_RECONCILE_TTL сек назад.
+    force=True (записи, меняющие остаток) — выполняем всегда."""
+    global _last_reconcile
+    if not force:
+        now = time.time()
+        if now - _last_reconcile < _RECONCILE_TTL:
+            return
+    _last_reconcile = time.time()
+
     main_id = await _main_warehouse_id(db)
     if main_id is None:
         return
@@ -726,13 +790,23 @@ async def get_warehouse_stock(db: AsyncSession, wid: int) -> List[WarehouseStock
         .where(WarehouseStock.warehouse_id == wid, WarehouseStock.quantity != 0)
         .order_by(func.lower(WarehouseStock.component_name))
     )).scalars().all()
-    return [
-        WarehouseStockOut(
+    # Пер-складского резерва нет — он ведётся на уровне компонента (WarehouseComponent.reserved).
+    # Чтобы колонки «Резерв»/«Доступно» не показывали 0/полный остаток, показываем
+    # компонентный резерв на Основном складе (туда reconcile относит балансирующий остаток).
+    reserve_map: dict = {}
+    if w.warehouse_type == "main" and rows:
+        cres = (await db.execute(select(WarehouseComponent.name, WarehouseComponent.reserved))).all()
+        reserve_map = {_norm(n): _to_float(rv) for n, rv in cres}
+    out = []
+    for r in rows:
+        q = _to_float(r.quantity)
+        res = min(reserve_map.get(_norm(r.component_name), 0.0), q)
+        out.append(WarehouseStockOut(
             warehouse_id=wid, warehouse_name=w.name, warehouse_type=w.warehouse_type,
-            component_name=r.component_name, quantity=_to_float(r.quantity),
-            reserved=_to_float(r.reserved), available=_to_float(r.quantity) - _to_float(r.reserved),
-        ) for r in rows
-    ]
+            component_name=r.component_name, quantity=q,
+            reserved=res, available=q - res,
+        ))
+    return out
 
 
 async def get_component_distribution(db: AsyncSession, component_name: str) -> List[WarehouseStockOut]:
@@ -742,15 +816,21 @@ async def get_component_distribution(db: AsyncSession, component_name: str) -> L
     rows = (await db.execute(
         select(WarehouseStock).where(func.lower(WarehouseStock.component_name) == _norm(component_name))
     )).scalars().all()
+    # Компонентный резерв показываем на Основном складе (пер-складского резерва нет).
+    comp_reserved = _to_float((await db.execute(
+        select(WarehouseComponent.reserved).where(func.lower(WarehouseComponent.name) == _norm(component_name))
+    )).scalar_one_or_none())
     out = []
     for r in rows:
         w = whs.get(r.warehouse_id)
         if not w:
             continue
+        q = _to_float(r.quantity)
+        res = min(comp_reserved, q) if w.warehouse_type == "main" else 0.0
         out.append(WarehouseStockOut(
             warehouse_id=r.warehouse_id, warehouse_name=w.name, warehouse_type=w.warehouse_type,
-            component_name=r.component_name, quantity=_to_float(r.quantity),
-            reserved=_to_float(r.reserved), available=_to_float(r.quantity) - _to_float(r.reserved),
+            component_name=r.component_name, quantity=q,
+            reserved=res, available=q - res,
         ))
     out.sort(key=lambda x: x.warehouse_id)
     return out
@@ -767,7 +847,7 @@ async def transfer_stock(db: AsyncSession, data: StockTransferRequest) -> dict:
     if not src_w or not dst_w:
         raise ValueError("Склад не найден")
 
-    await reconcile_stock(db)
+    await reconcile_stock(db, force=True)
 
     src = (await db.execute(
         select(WarehouseStock).where(
@@ -1104,7 +1184,7 @@ async def update_purchase_request(db: AsyncSession, pid: int, data: PurchaseRequ
     await db.commit()
 
     if new_status == "received":
-        await reconcile_stock(db)
+        await reconcile_stock(db, force=True)
 
     pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one()
     return await _pr_to_out(db, pr)
@@ -1121,7 +1201,7 @@ async def receive_purchase_request(db: AsyncSession, pid: int) -> dict:
     await _receive_into_stock(db, pr)
     await db.execute(update(PurchaseRequest).where(PurchaseRequest.id == pid).values(status="received"))
     await db.commit()
-    await reconcile_stock(db)
+    await reconcile_stock(db, force=True)
     pr = (await db.execute(select(PurchaseRequest).where(PurchaseRequest.id == pid))).scalar_one()
     return await _pr_to_out(db, pr)
 

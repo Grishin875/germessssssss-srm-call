@@ -1,6 +1,6 @@
 import logging, time, random, string
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy import select, update, delete, func, text, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -42,6 +42,82 @@ def _op_id(prefix: str) -> str:
 
 def _m(obj) -> dict:
     return {c.key: getattr(obj, c.key) for c in obj.__mapper__.column_attrs}
+
+
+# ── Аналитика качества (дашборд ОТК) ──────────────────────────────────────────
+
+@router.get("/analytics/summary")
+async def otk_analytics_summary(request: Request, days: int = 30):
+    """Сводка качества за период: KPI, брак по отделам, Парето причин, тренд."""
+    _perm(request, "otk.view")
+    db = _db(request)
+    days = max(1, min(int(days or 30), 365))
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # KPI + разбивка по отделам (production_type проверенных партий)
+    dept_rows = (await db.execute(text("""
+        SELECT COALESCE(NULLIF(TRIM(production_type), ''), '—') AS dept,
+               COALESCE(SUM(released_qty), 0) AS released,
+               COALESCE(SUM(good_qty), 0)     AS good,
+               COALESCE(SUM(defect_qty), 0)   AS defect,
+               COUNT(*)                        AS batches
+        FROM otk_batches
+        WHERE check_date IS NOT NULL AND check_date >= :cutoff
+        GROUP BY COALESCE(NULLIF(TRIM(production_type), ''), '—')
+        ORDER BY defect DESC
+    """), {"cutoff": cutoff})).mappings().all()
+
+    by_department = []
+    tot_released = tot_good = tot_defect = tot_batches = 0
+    for r in dept_rows:
+        released, good, defect = int(r["released"]), int(r["good"]), int(r["defect"])
+        base = good + defect
+        by_department.append({
+            "label": r["dept"], "released": released, "good": good, "defect": defect,
+            "batches": int(r["batches"]),
+            "rate": round(defect * 100.0 / base, 1) if base else 0.0,
+        })
+        tot_released += released; tot_good += good; tot_defect += defect
+        tot_batches += int(r["batches"])
+    kpi_base = tot_good + tot_defect
+    kpi = {
+        "released": tot_released, "good": tot_good, "defect": tot_defect,
+        "batches": tot_batches,
+        "defect_rate": round(tot_defect * 100.0 / kpi_base, 1) if kpi_base else 0.0,
+    }
+
+    # Парето причин брака (defect_records → otk_defect_types)
+    pareto = [
+        {"label": r["cause"], "value": int(r["qty"])}
+        for r in (await db.execute(text("""
+            SELECT COALESCE(NULLIF(TRIM(dt.subdescription), ''), NULLIF(TRIM(dt.category), ''), 'Прочее') AS cause,
+                   COALESCE(SUM(dr.quantity), 0) AS qty
+            FROM defect_records dr
+            JOIN otk_batches b ON dr.otk_batch_id = b.id
+            LEFT JOIN otk_defect_types dt ON dr.otk_defect_type_id = dt.id
+            WHERE b.check_date >= :cutoff
+            GROUP BY COALESCE(NULLIF(TRIM(dt.subdescription), ''), NULLIF(TRIM(dt.category), ''), 'Прочее')
+            HAVING COALESCE(SUM(dr.quantity), 0) > 0
+            ORDER BY qty DESC
+            LIMIT 12
+        """), {"cutoff": cutoff})).mappings().all()
+    ]
+
+    # Тренд брака по дням
+    trend = [
+        {"date": r["d"], "defect": int(r["defect"]), "released": int(r["released"])}
+        for r in (await db.execute(text("""
+            SELECT to_char(date_trunc('day', check_date), 'YYYY-MM-DD') AS d,
+                   COALESCE(SUM(defect_qty), 0)   AS defect,
+                   COALESCE(SUM(released_qty), 0) AS released
+            FROM otk_batches
+            WHERE check_date IS NOT NULL AND check_date >= :cutoff
+            GROUP BY date_trunc('day', check_date)
+            ORDER BY d
+        """), {"cutoff": cutoff})).mappings().all()
+    ]
+
+    return {"days": days, "kpi": kpi, "by_department": by_department, "pareto": pareto, "trend": trend}
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -216,6 +292,14 @@ async def otk_check(body: OtkCheckRequest, request: Request):
         update_vals["defect_comment"] = body.defect_comment
     if body.rejection_photo_url:
         update_vals["rejection_photo_url"] = body.rejection_photo_url
+    # Данные о прошивке (приходят с формы ОТК для SMD): раньше принимались, но не
+    # сохранялись. Теперь пишем их в партию, чтобы «Кол-во прошитых»/«Версия» не терялись.
+    if body.is_firmware_done is not None:
+        update_vals["is_firmware_done"] = body.is_firmware_done
+    if body.firmware_qty is not None:
+        update_vals["firmware_qty"] = body.firmware_qty
+    if body.firmware_version:
+        update_vals["firmware_version"] = body.firmware_version
 
     await db.execute(
         update(OtkBatch).where(OtkBatch.batch_id == body.batchId).values(**update_vals)

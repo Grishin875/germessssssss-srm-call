@@ -6,16 +6,19 @@ interface Props {
   children: ReactNode;
   className?: string;
   actions?: ReactNode;
+  /** Не обрезать содержимое — нужно, когда внутри карточки открывается
+   *  абсолютно-позиционированное меню (автокомплит), которое иначе клипается. */
+  overflowVisible?: boolean;
 }
 
 // Сохранено для обратной совместимости — больше не используется (no-op).
 export function trackPointer(_e: MouseEvent<HTMLElement>) {}
 
-export function Card({ title, children, className = "", actions }: Props) {
+export function Card({ title, children, className = "", actions, overflowVisible = false }: Props) {
   return (
     <div
       className={`card-elev glass ${className}`}
-      style={{ borderRadius: 12, overflow: "hidden" }}
+      style={{ borderRadius: 12, overflow: overflowVisible ? "visible" : "hidden" }}
     >
       {(title || actions) && (
         <div

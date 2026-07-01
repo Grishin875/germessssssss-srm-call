@@ -60,6 +60,11 @@ async def check_sla_once(session) -> int:
                     WHERE n.user_id = u.id AND n.title = :t
                       AND n.created_at > NOW() - INTERVAL '24 hours'
                   )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM notification_subscriptions s
+                    WHERE (s.user_id = u.id OR s.role = u.role)
+                      AND s.event_type = 'sla.violation' AND s.enabled = false
+                  )
             """).bindparams(bindparam("roles", expanding=True))
             res = await session.execute(stmt, {
                 "t": title,

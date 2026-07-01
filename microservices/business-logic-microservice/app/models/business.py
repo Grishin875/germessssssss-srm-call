@@ -27,6 +27,7 @@ class Order(Base):
     positions = Column(Text)                      # JSON: [{name, qty}] — комплектация (список позиций для Excel)
     received_date = Column(String(50))            # дата получения заказа
     shipment_date = Column(String(50))            # дата отправки заказа
+    parent_order_id = Column(Integer)             # родительский заказ (для авто-под-заказов на полуфабрикаты)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

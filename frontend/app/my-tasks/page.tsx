@@ -220,9 +220,13 @@ export default function MyTasksPage() {
                                 {stage.components.slice(0, 6).map((c, i) => (
                                   <span key={i} style={{
                                     fontSize: 11, padding: "2px 7px", borderRadius: 5,
-                                    background: "var(--bg-primary)", border: "1px solid var(--border)",
-                                    color: "var(--text-secondary)",
-                                  }}>{c.name} × {c.qty}</span>
+                                    background: c.source === "product" ? "#8b5cf615" : "var(--bg-primary)",
+                                    border: c.source === "product" ? "1px solid #8b5cf655" : "1px solid var(--border)",
+                                    color: c.source === "product" ? "#7c3aed" : "var(--text-secondary)",
+                                    fontWeight: c.source === "product" ? 600 : 400,
+                                  }} title={c.source === "product" ? "Полуфабрикат — взять со склада ГП" : undefined}>
+                                    {c.source === "product" ? "📦 " : ""}{c.name} × {c.qty}
+                                  </span>
                                 ))}
                                 {stage.components.length > 6 && (
                                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>+{stage.components.length - 6} ещё</span>

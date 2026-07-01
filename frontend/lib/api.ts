@@ -276,6 +276,11 @@ export const api = {
   async getOrder(id: number) {
     return request<Order>(`/api/orders/${id}`);
   },
+  async getOrderChildren(id: number) {
+    return request<{ id: number; product_name: string; planned_qty: number; status: string; created_at?: string }[]>(
+      `/api/orders/${id}/children`
+    ).catch(() => []);
+  },
   async createOrder(data: Partial<Order>) {
     return request<Order>("/api/orders", { method: "POST", body: JSON.stringify(data) });
   },
@@ -455,6 +460,12 @@ export const api = {
     if (dateTo) p.set("date_to", dateTo);
     return request<OtkReport>(`/api/otk/reports?${p.toString()}`);
   },
+  async getOtkAnalytics(days = 30) {
+    return request<OtkAnalytics>(`/api/otk/analytics/summary?days=${days}`);
+  },
+  async getLowStock() {
+    return request<LowStockItem[]>(`/api/warehouse/low-stock`).catch(() => []);
+  },
   async getDefectTypes() {
     return request<DefectType[]>("/api/otk/defect-types").catch(() => []);
   },
@@ -489,6 +500,11 @@ export const api = {
   async deleteProductFull(productName: string) {
     return request<{ success: boolean; product_name: string; deleted: Record<string, number> }>(
       `/api/recipes/product/delete`, { method: "POST", body: JSON.stringify({ product_name: productName }) }
+    );
+  },
+  async renameProduct(oldName: string, newName: string) {
+    return request<{ success: boolean; old_name: string; new_name: string; updated: Record<string, number> }>(
+      `/api/recipes/product/rename`, { method: "POST", body: JSON.stringify({ old_name: oldName, new_name: newName }) }
     );
   },
   async calculateDemand(plan: { product: string; qty: number }[]) {
@@ -1124,6 +1140,7 @@ export interface Order {
   managers?: string[];      // id руководителей проекта
   manager_names?: string[];
   can_close?: boolean;      // может ли текущий пользователь закрыть заказ
+  parent_order_id?: number; // родительский заказ (если это авто-под-заказ на полуфабрикат)
   stages_total?: number;
   stages_done?: number;
   created_at: string;
@@ -1146,6 +1163,26 @@ export interface Batch {
   end_date?: string;
   order_id?: number;
   order_status?: string;
+}
+
+export interface OtkAnalytics {
+  days: number;
+  kpi: { released: number; good: number; defect: number; batches: number; defect_rate: number };
+  by_department: { label: string; released: number; good: number; defect: number; batches: number; rate: number }[];
+  pareto: { label: string; value: number }[];
+  trend: { date: string; defect: number; released: number }[];
+}
+
+export interface LowStockItem {
+  id: number;
+  name: string;
+  stock: number;
+  reserved: number;
+  available: number;
+  min_stock: number;
+  unit?: string;
+  category?: string;
+  deficit: number;
 }
 
 export interface OtkBatch {

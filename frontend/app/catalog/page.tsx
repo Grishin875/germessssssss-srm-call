@@ -63,6 +63,10 @@ export default function CatalogPage() {
     try {
       const data = { name: form.name.trim(), sku: form.sku || undefined, category: form.category || undefined, description: form.description || undefined, unit: form.unit, is_active: form.is_active, needs_smd: form.needs_smd, is_receiver: form.is_receiver, needs_assembly: form.needs_assembly };
       if (editItem) {
+        // Переименование — отдельным каскадным вызовом (PATCH имя не меняет).
+        if (form.name.trim() !== editItem.name) {
+          await api.renameProduct(editItem.name, form.name.trim());
+        }
         await api.updateCatalogItem(editItem.id, data);
       } else {
         await api.createCatalogItem(data);
@@ -213,15 +217,24 @@ export default function CatalogPage() {
           </div>
           <div>
             <label>Категория</label>
-            <input
-              value={form.category}
-              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-              placeholder="Например: Платы, Корпуса..."
-              list="catalog-categories"
-            />
-            <datalist id="catalog-categories">
-              {categories.map(c => <option key={c} value={c} />)}
-            </datalist>
+            <div style={{ display: "flex", gap: 8 }}>
+              {categories.length > 0 && (
+                <select
+                  value={categories.includes(form.category) ? form.category : ""}
+                  onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">— выбрать —</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              )}
+              <input
+                value={form.category}
+                onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                placeholder={categories.length > 0 ? "или новая…" : "Например: Платы, Корпуса..."}
+                style={{ flex: 1 }}
+              />
+            </div>
           </div>
           <div>
             <label>Описание</label>

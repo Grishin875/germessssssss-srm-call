@@ -34,7 +34,13 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(200)",
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS recipient VARCHAR(200)",
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS source_batch_id VARCHAR(100)",
-        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS is_firmware_done INTEGER DEFAULT 0",
+        "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS is_firmware_done BOOLEAN DEFAULT FALSE",
+        # Приводим тип к BOOLEAN, только если колонка ранее была создана как INTEGER
+        # (иначе на каждом старте шёл бы лишний rewrite таблицы).
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='otk_batches' AND column_name='is_firmware_done' AND data_type='integer') "
+        "THEN ALTER TABLE otk_batches ALTER COLUMN is_firmware_done TYPE BOOLEAN USING (is_firmware_done <> 0); "
+        "END IF; END $$;",
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_qty INTEGER DEFAULT 0",
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(100)",
         "ALTER TABLE otk_batches ADD COLUMN IF NOT EXISTS order_item_id INTEGER",
