@@ -63,15 +63,17 @@ function ComponentSearch({ value, onChange, components }: {
   components: Component[];
 }) {
   const [open, setOpen] = useState(false);
+  const [browse, setBrowse] = useState(false);   // режим «просмотр всего списка» (по стрелке ▾)
   const [query, setQuery] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
 
   useEffect(() => { setQuery(value); }, [value]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (inputRef.current && !inputRef.current.contains(e.target as Node)) setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -117,11 +119,13 @@ function ComponentSearch({ value, onChange, components }: {
     });
   }
 
-  const filtered = components
-    .filter(c => c.name.toLowerCase().includes(query.toLowerCase()))
-    .slice(0, 25);
+  // В режиме «просмотр» (▾) показываем весь склад, иначе — фильтр по вводу.
+  const q = browse ? "" : query.toLowerCase();
+  const matchedAll = components.filter(c => c.name.toLowerCase().includes(q));
+  const LIMIT = 40;
+  const filtered = matchedAll.slice(0, LIMIT);
 
-  const dropdown = open && filtered.length > 0 ? createPortal(
+  const dropdown = open ? createPortal(
     <div style={dropdownStyle} onMouseDown={e => e.preventDefault()}>
       {filtered.map(c => {
         const qty = c.stock ?? 0;
@@ -129,7 +133,7 @@ function ComponentSearch({ value, onChange, components }: {
         return (
           <div
             key={c.id}
-            onMouseDown={() => { setQuery(c.name); onChange(c.name); setOpen(false); }}
+            onMouseDown={() => { setQuery(c.name); onChange(c.name); setOpen(false); setBrowse(false); }}
             style={{ padding: "6px 10px", cursor: "pointer", fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}
             onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-secondary, #f9fafb)")}
             onMouseLeave={e => (e.currentTarget.style.background = "")}
@@ -139,20 +143,55 @@ function ComponentSearch({ value, onChange, components }: {
           </div>
         );
       })}
+      {components.length === 0 && (
+        <div style={{ padding: "10px 12px", fontSize: 12.5, color: "var(--text-muted)" }}>
+          Склад пуст — добавьте компоненты в разделе «Склад»
+        </div>
+      )}
+      {components.length > 0 && filtered.length === 0 && (
+        <div style={{ padding: "10px 12px", fontSize: 12.5, color: "var(--text-muted)" }}>
+          Ничего не найдено по «{query}»
+        </div>
+      )}
+      {matchedAll.length > LIMIT && (
+        <div style={{ padding: "6px 12px", fontSize: 11.5, color: "var(--text-muted)", borderTop: "1px solid var(--border-light)", position: "sticky", bottom: 0, background: "var(--bg-secondary, #fff)" }}>
+          Показаны первые {LIMIT} из {matchedAll.length} — уточните поиск
+        </div>
+      )}
     </div>,
     document.body
   ) : null;
 
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <input
         ref={inputRef}
         value={query}
-        onChange={e => { setQuery(e.target.value); onChange(e.target.value); setOpen(true); updatePosition(); }}
-        onFocus={() => { setOpen(true); updatePosition(); }}
-        placeholder="Поиск по складу…"
-        style={{ fontSize: 13, minWidth: 180 }}
+        onChange={e => { setQuery(e.target.value); onChange(e.target.value); setBrowse(false); setOpen(true); updatePosition(); }}
+        onFocus={() => { setBrowse(!query); setOpen(true); updatePosition(); }}
+        placeholder="Выберите со склада…"
+        style={{ fontSize: 13, minWidth: 180, paddingRight: 28 }}
       />
+      <button
+        type="button"
+        tabIndex={-1}
+        title="Показать весь список склада"
+        onClick={() => {
+          if (open && browse) { setOpen(false); return; }
+          inputRef.current?.focus();   // сперва фокус (его onFocus может выставить browse по query)…
+          setBrowse(true); setOpen(true); updatePosition();  // …затем принудительно режим «весь список»
+        }}
+        style={{
+          position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
+          width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)",
+          borderRadius: 5,
+        }}
+      >
+        <svg width={12} height={12} fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
       {dropdown}
     </div>
   );
