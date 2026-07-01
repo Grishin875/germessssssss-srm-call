@@ -46,7 +46,7 @@ def _m(obj) -> dict:
 
 # ── Аналитика качества (дашборд ОТК) ──────────────────────────────────────────
 
-@router.get("/analytics/summary")
+@router.get("/otk/analytics/summary")
 async def otk_analytics_summary(request: Request, days: int = 30):
     """Сводка качества за период: KPI, брак по отделам, Парето причин, тренд."""
     _perm(request, "otk.view")
