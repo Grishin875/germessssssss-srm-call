@@ -35,6 +35,7 @@ class Recipe(Base):
     norm = Column(Numeric(15, 4), nullable=False)
     production_type = Column(String(100))
     source = Column(String(50), default="warehouse")   # NEW: откуда берётся
+    stage_id = Column(Integer)                         # явная привязка компонента к этапу рецептуры (recipe_stages.id); NULL = авто по source
     warehouse_component_name = Column(String(500))
     designator = Column(String(100))
     board_side = Column(String(10))
@@ -118,5 +119,6 @@ class RecipeStage(Base):
     required_role = Column(String(50))                   # нужная роль
     depends_on_previous = Column(Integer, default=1)     # 1=ждать предыдущий, 0=параллельно
     transfer_qty = Column(Integer, default=0)            # 1=фиксировать передачу кол-ва следующему этапу
+    output_name = Column(String(500))                    # что выходит из этапа (полуфабрикат/результат); вход следующего этапа
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())

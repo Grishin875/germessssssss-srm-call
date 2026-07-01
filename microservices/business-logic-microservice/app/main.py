@@ -38,6 +38,11 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS otk_attempts INTEGER DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS skipped_stage_ids TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS parent_order_id INTEGER",
+        "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS output_name VARCHAR(500)",
+        # Дубли идемпотентных ALTER из products-microservice: business-logic читает эти
+        # колонки при генерации этапов — защита от частичного деплоя/гонки стартов.
+        "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS stage_id INTEGER",
+        "ALTER TABLE recipe_stages ADD COLUMN IF NOT EXISTS output_name VARCHAR(500)",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS est_minutes INTEGER",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS checklist TEXT DEFAULT '[]'",
         "ALTER TABLE order_stages ADD COLUMN IF NOT EXISTS result_photo VARCHAR(500)",

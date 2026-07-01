@@ -174,6 +174,7 @@ class OrderStage(Base):
     on_fail_stage_id = Column(Integer, nullable=True) # ребро графа: куда идёт при БРАКЕ на гейте (напр. Ремонт РЭА)
     rework_target_type = Column(String(50))           # legacy: тип этапа, куда уходит брак (если нет on_fail_stage_id)
     components_json = Column(Text, default="[]")
+    output_name   = Column(String(500))               # что выходит из этапа (полуфабрикат/результат из рецептуры)
     est_minutes   = Column(Integer)                   # норматив времени на этап (мин)
     checklist     = Column(Text, default="[]")        # JSON: [{text, done}]
     result_photo  = Column(String(500))               # фото результата этапа

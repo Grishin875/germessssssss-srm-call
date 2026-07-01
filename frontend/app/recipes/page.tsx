@@ -276,6 +276,7 @@ export default function RecipesPage() {
     component_name: "", product_name: "", norm: "",
     production_type: "SMD", source: "warehouse",
     warehouse_component_name: "", designator: "", board_side: "",
+    stage_id: "",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -288,7 +289,7 @@ export default function RecipesPage() {
   // RecipeStage form
   const [showStageModal, setShowStageModal] = useState(false);
   const [editRStage, setEditRStage] = useState<RecipeStage | null>(null);
-  const [rsForm, setRsForm] = useState({ product_name: "", stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0" });
+  const [rsForm, setRsForm] = useState({ product_name: "", stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "" });
 
   // System roles for stage form
   const [systemRoles, setSystemRoles] = useState<SystemRoleItem[]>([]);
@@ -387,6 +388,7 @@ export default function RecipesPage() {
         board_side: form.board_side || undefined,
         warehouse_component_name: form.warehouse_component_name || undefined,
         designator: form.designator || undefined,
+        stage_id: form.stage_id ? Number(form.stage_id) : null,
       };
       if (editItem) await api.updateRecipe(editItem.id, data);
       else await api.createRecipe(data);
@@ -511,6 +513,7 @@ export default function RecipesPage() {
         required_role: rsForm.required_role || undefined,
         depends_on_previous: Number(rsForm.depends_on_previous),
         transfer_qty: Number(rsForm.transfer_qty),
+        output_name: rsForm.output_name.trim(),   // "" очищает результат этапа
       };
       if (editRStage) await api.updateRecipeStage(editRStage.id, data);
       else await api.createRecipeStage(data);
@@ -590,7 +593,7 @@ export default function RecipesPage() {
               }}>Создать продукт</Button>
               <Button variant="secondary" onClick={() => {
                 setShowAdd(true); setEditItem(null);
-                setForm({ component_name: "", product_name: "", norm: "", production_type: "SMD", source: "warehouse", warehouse_component_name: "", designator: "", board_side: "" });
+                setForm({ component_name: "", product_name: "", norm: "", production_type: "SMD", source: "warehouse", warehouse_component_name: "", designator: "", board_side: "", stage_id: "" });
                 setError("");
               }}>+ Компонент</Button>
             </div>
@@ -641,7 +644,7 @@ export default function RecipesPage() {
                     {hasPermission("recipes.edit") && (<>
                       <button
                         onClick={() => {
-                          setRsForm({ product_name: product, stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0" });
+                          setRsForm({ product_name: product, stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "" });
                           setEditRStage(null); setShowStageModal(true); setError("");
                         }}
                         style={{ fontSize: 12, fontWeight: 600, color: "#8b5cf6", background: "none", border: "none", cursor: "pointer" }}
@@ -729,15 +732,39 @@ export default function RecipesPage() {
                                   {systemRoles.find(r => r.code === rs.required_role)?.label || rs.required_role}
                                 </span>
                               )}
+                              {rs.output_name && (
+                                <span title="Результат этапа — станет входом следующего" style={{ fontSize: 11, fontWeight: 600, padding: "1px 8px", borderRadius: 10, background: "#8b5cf618", color: "#7c3aed" }}>
+                                  → 📦 {rs.output_name}
+                                </span>
+                              )}
                               {rs.description && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{rs.description}</span>}
-                              {hasPermission("recipes.edit") && (
+                              {hasPermission("recipes.edit") && (<>
+                                <button
+                                  title="Редактировать этап"
+                                  onClick={() => {
+                                    setEditRStage(rs);
+                                    setRsForm({
+                                      product_name: rs.product_name, stage_name: rs.stage_name,
+                                      stage_type: rs.stage_type, sort_order: String(rs.sort_order ?? 0),
+                                      description: rs.description || "", instructions: rs.instructions || "",
+                                      required_role: rs.required_role || "",
+                                      depends_on_previous: String(rs.depends_on_previous ?? 1),
+                                      transfer_qty: String(rs.transfer_qty ?? 0),
+                                      output_name: rs.output_name || "",
+                                    });
+                                    setShowStageModal(true); setError("");
+                                  }}
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
+                                  onMouseEnter={e => (e.currentTarget.style.color = "var(--primary)")}
+                                  onMouseLeave={e => (e.currentTarget.style.color = "var(--text-muted)")}
+                                ><IcoPencil /></button>
                                 <button
                                   onClick={async () => { if (confirm("Удалить этап?")) { await api.deleteRecipeStage(rs.id); load(); } }}
                                   style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
                                   onMouseEnter={e => (e.currentTarget.style.color = "var(--danger)")}
                                   onMouseLeave={e => (e.currentTarget.style.color = "var(--text-muted)")}
                                 ><IcoTrash /></button>
-                              )}
+                              </>)}
                             </div>
                           );
                         })}
@@ -771,7 +798,7 @@ export default function RecipesPage() {
                     <table>
                       <thead>
                         <tr>
-                          {["Компонент","Норма","Тип","Источник","Склад","Десигнатор","Сторона","Остаток",""].map(h => (
+                          {["Компонент","Норма","Тип","Этап","Источник","Склад","Десигнатор","Сторона","Остаток",""].map(h => (
                             <th key={h}>{h}</th>
                           ))}
                         </tr>
@@ -782,6 +809,14 @@ export default function RecipesPage() {
                             <td style={{ fontWeight: 500 }}>{r.component_name}</td>
                             <td>{r.norm}</td>
                             <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{r.production_type}</td>
+                            <td style={{ fontSize: 12 }}>
+                              {(() => {
+                                const st = r.stage_id ? (rsByProduct[r.product_name] || []).find(s => s.id === r.stage_id) : null;
+                                return st
+                                  ? <span style={{ fontSize: 11, fontWeight: 600, padding: "1px 8px", borderRadius: 10, background: "var(--primary-light)", color: "var(--primary-text)" }}>{st.sort_order}. {st.stage_name}</span>
+                                  : <span style={{ color: "var(--text-muted)" }}>авто</span>;
+                              })()}
+                            </td>
                             <td><SourceBadge source={r.source} /></td>
                             <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.warehouse_component_name || "—"}</td>
                             <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.designator || "—"}</td>
@@ -793,7 +828,7 @@ export default function RecipesPage() {
                                   <button
                                     onClick={() => {
                                       setEditItem(r);
-                                      setForm({ component_name: r.component_name, product_name: r.product_name, norm: String(r.norm), production_type: r.production_type, source: r.source || "warehouse", warehouse_component_name: r.warehouse_component_name || "", designator: r.designator || "", board_side: r.board_side || "" });
+                                      setForm({ component_name: r.component_name, product_name: r.product_name, norm: String(r.norm), production_type: r.production_type, source: r.source || "warehouse", warehouse_component_name: r.warehouse_component_name || "", designator: r.designator || "", board_side: r.board_side || "", stage_id: r.stage_id && (rsByProduct[r.product_name] || []).some(s => s.id === r.stage_id) ? String(r.stage_id) : "" });
                                       setShowAdd(true); setError("");
                                     }}
                                     style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px 6px", borderRadius: 5, display: "flex", alignItems: "center" }}
@@ -965,7 +1000,7 @@ export default function RecipesPage() {
           </div>
           <div>
             <label>Изделие *</label>
-            <input value={form.product_name} onChange={e => setForm({ ...form, product_name: e.target.value })} />
+            <input value={form.product_name} onChange={e => setForm({ ...form, product_name: e.target.value, stage_id: "" })} />
           </div>
           <div>
             <label>Норма *</label>
@@ -989,6 +1024,20 @@ export default function RecipesPage() {
               {["SMD","Сборка","Гравировка","3D Печать"].map(t => <option key={t}>{t}</option>)}
             </select>
           </div>
+          {(rsByProduct[form.product_name] || []).length > 0 && (
+            <div>
+              <label>Этап (куда добавляется компонент)</label>
+              <select value={form.stage_id} onChange={e => setForm({ ...form, stage_id: e.target.value })}>
+                <option value="">— авто (по типу/источнику) —</option>
+                {(rsByProduct[form.product_name] || []).sort((a, b) => a.sort_order - b.sort_order).map(s => (
+                  <option key={s.id} value={String(s.id)}>{s.sort_order}. {s.stage_name}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                Компонент попадёт в список «что добавить» именно этого этапа.
+              </div>
+            </div>
+          )}
           <div>
             <label>Источник компонента</label>
             <select value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>
@@ -1047,6 +1096,17 @@ export default function RecipesPage() {
                 <option value="">— Любой —</option>
                 {systemRoles.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
               </select>
+            </div>
+          </div>
+          <div>
+            <label>Результат этапа (что выходит)</label>
+            <input
+              value={rsForm.output_name}
+              onChange={e => setRsForm({ ...rsForm, output_name: e.target.value })}
+              placeholder="Например: Плата запаянная (полуфабрикат)"
+            />
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+              Результат автоматически станет входом следующего этапа: «взять {rsForm.output_name.trim() || "полуфабрикат"} + добавить компоненты этапа».
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

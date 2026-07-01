@@ -1002,18 +1002,27 @@ export default function OrderDetailPage() {
                           <div style={{ marginTop: 8 }}>
                             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>Компоненты:</div>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                              {stage.components.map((c, ci) => (
-                                <span key={ci} style={{
-                                  fontSize: 12, padding: "2px 8px", borderRadius: 6,
-                                  background: c.source === "product" ? "#8b5cf615" : "var(--bg-secondary)",
-                                  color: c.source === "product" ? "#7c3aed" : "var(--text-secondary)",
-                                  border: c.source === "product" ? "1px solid #8b5cf655" : "1px solid var(--border)",
-                                  fontWeight: c.source === "product" ? 600 : 400,
-                                }} title={c.source === "product" ? "Полуфабрикат — взять готовым со склада ГП" : undefined}>
-                                  {c.source === "product" ? "📦 " : ""}{c.name} × {c.qty}
-                                </span>
-                              ))}
+                              {stage.components.map((c, ci) => {
+                                const isSemi = c.source === "product";
+                                const isChain = c.source === "stage_output";
+                                return (
+                                  <span key={ci} style={{
+                                    fontSize: 12, padding: "2px 8px", borderRadius: 6,
+                                    background: isSemi ? "#8b5cf615" : isChain ? "#0ea5e915" : "var(--bg-secondary)",
+                                    color: isSemi ? "#7c3aed" : isChain ? "#0369a1" : "var(--text-secondary)",
+                                    border: isSemi ? "1px solid #8b5cf655" : isChain ? "1px solid #0ea5e955" : "1px solid var(--border)",
+                                    fontWeight: isSemi || isChain ? 600 : 400,
+                                  }} title={isSemi ? "Полуфабрикат — взять готовым со склада ГП" : isChain ? "Результат предыдущего этапа" : undefined}>
+                                    {isSemi ? "📦 " : isChain ? "⬅ " : ""}{c.name} × {c.qty}
+                                  </span>
+                                );
+                              })}
                             </div>
+                          </div>
+                        )}
+                        {stage.output_name && (
+                          <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: "#7c3aed" }}>
+                            Результат этапа: → 📦 {stage.output_name}
                           </div>
                         )}
                         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>

@@ -1234,6 +1234,7 @@ export interface Recipe {
   norm: number;
   production_type: string;
   source?: string;
+  stage_id?: number | null;   // явная привязка компонента к этапу рецептуры
   warehouse_component_name?: string;
   designator?: string;
   board_side?: string;
@@ -1282,6 +1283,7 @@ export interface OrderStage {
   on_fail_stage_id?: number | null;     // ребро графа: куда уходит брак на гейте (напр. Ремонт РЭА)
   rework_target_type?: string | null;   // legacy: тип этапа возврата брака (если нет on_fail_stage_id)
   components: { name: string; qty: number; source?: string }[];
+  output_name?: string | null;  // результат этапа (полуфабрикат из рецептуры)
   est_minutes?: number | null;
   checklist?: string;        // JSON-строка [{text, done}]
   result_photo?: string | null;
@@ -1321,6 +1323,7 @@ export interface RecipeStage {
   required_role?: string;
   depends_on_previous?: number;
   transfer_qty?: number;
+  output_name?: string | null;   // что выходит из этапа (полуфабрикат/результат)
 }
 
 export interface MyStage extends OrderStage {

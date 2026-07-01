@@ -408,6 +408,7 @@ async def create_recipe_stage(body: RecipeStageCreate, request: Request):
         required_role=body.required_role,
         depends_on_previous=body.depends_on_previous,
         transfer_qty=body.transfer_qty,
+        output_name=(body.output_name or "").strip() or None,
     )
     db.add(stage)
     await db.flush()
@@ -471,6 +472,8 @@ async def update_recipe_stage(stage_id: int, body: RecipeStageUpdate, request: R
     vals = body.model_dump(exclude_none=True)
     if not vals:
         raise HTTPException(400, "Нет данных для обновления")
+    if "output_name" in vals:
+        vals["output_name"] = vals["output_name"].strip() or None  # "" очищает результат
     vals["updated_at"] = func.now()
     stmt = (
         update(RecipeStage)
@@ -494,6 +497,8 @@ async def delete_recipe_stage(stage_id: int, request: Request):
     )).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Этап не найден")
+    # Снять привязки компонентов к удалённому этапу (FK нет — иначе висячий stage_id).
+    await db.execute(update(Recipe).where(Recipe.stage_id == stage_id).values(stage_id=None))
     await _cleanup_if_empty(db, row)
     await db.commit()
     return {"success": True}
@@ -574,15 +579,20 @@ async def create_recipe(body: RecipeCreate, request: Request):
     # Upsert БЕЗ зависимости от ON CONFLICT: на recipes нет уникального ключа, поэтому
     # ON CONFLICT DO NOTHING не срабатывал и каждый POST плодил дубль → задвоение BOM.
     # Сначала пробуем обновить существующий рецепт (без учёта регистра), иначе вставляем.
+    # stage_id НЕ трогаем, если не прислан (Excel-реимпорт/массовое создание не должны
+    # стирать явные привязки компонент→этап). Сброс привязки — через PUT /recipes/{id}.
+    upd_vals = dict(norm=body.norm, source=body.source or "warehouse",
+                    warehouse_component_name=body.warehouse_component_name,
+                    designator=body.designator, board_side=side,
+                    component_size=body.component_size, updated_at=func.now())
+    if body.stage_id is not None:
+        upd_vals["stage_id"] = body.stage_id
     upd = (
         update(Recipe)
         .where(func.lower(Recipe.component_name) == _norm(body.component_name),
                func.lower(Recipe.product_name) == _norm(body.product_name),
                Recipe.production_type == body.production_type)
-        .values(norm=body.norm, source=body.source or "warehouse",
-                warehouse_component_name=body.warehouse_component_name,
-                designator=body.designator, board_side=side,
-                component_size=body.component_size, updated_at=func.now())
+        .values(**upd_vals)
         .returning(Recipe)
     )
     row = (await db.execute(upd)).mappings().first()
@@ -592,6 +602,7 @@ async def create_recipe(body: RecipeCreate, request: Request):
             .values(component_name=body.component_name.strip(), product_name=body.product_name.strip(),
                     norm=body.norm, production_type=body.production_type,
                     source=body.source or "warehouse",
+                    stage_id=body.stage_id,
                     warehouse_component_name=body.warehouse_component_name,
                     designator=body.designator, board_side=side, component_size=body.component_size)
             .returning(Recipe)
@@ -615,6 +626,7 @@ async def update_recipe(recipe_id: int, body: RecipeUpdate, request: Request):
         .values(component_name=body.component_name.strip(), product_name=body.product_name.strip(),
                 norm=body.norm, production_type=body.production_type,
                 source=body.source or "warehouse",
+                stage_id=body.stage_id,
                 warehouse_component_name=body.warehouse_component_name,
                 designator=body.designator, board_side=side,
                 component_size=body.component_size, updated_at=func.now())

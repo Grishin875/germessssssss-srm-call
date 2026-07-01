@@ -180,6 +180,77 @@ def _norm(s: str) -> str:
     return s.strip().lower()
 
 
+def _strip_stage_id(comps: list) -> list:
+    """Убрать служебный ключ stage_id перед сохранением в components_json."""
+    return [{k: v for k, v in c.items() if k != "stage_id"} for c in comps]
+
+
+def _assign_stage_components(r_stages, all_comps: list, planned_qty, skipped_ids=None) -> list:
+    """Разложить компоненты рецептуры по этапам + связать этапы по входу/выходу.
+
+    Правила:
+    - компонент с явной привязкой (recipes.stage_id) попадает ТОЛЬКО на свой этап;
+    - компонент, привязанный к ПРОПУЩЕННОМУ в этом заказе этапу (skipped_ids),
+      исключается целиком — его работа не выполняется;
+    - без привязки (или с висячей привязкой на удалённый этап) — по старой
+      эвристике source/production_type (обратная совместимость);
+    - выход этапа (output_name) доставляется входом (source='stage_output')
+      потребляющим этапам со СТРОГО бОльшим sort_order: параллельные соседи
+      одного уровня чужих выходов не получают; несколько параллельных выходов
+      (плата + корпус) доставляются следующему уровню все вместе; через
+      непотребляющие этапы (контроль/склад) выход «протаскивается»; после
+      доставки на уровень L выход считается потреблённым и дальше не дублируется.
+    Возвращает список (rs, stage_components) в порядке r_stages."""
+    skipped_ids = skipped_ids or set()
+    # Компоненты пропущенных этапов не нужны вовсе (этап осознанно не выполняется).
+    all_comps = [c for c in all_comps if not c.get("stage_id") or c["stage_id"] not in skipped_ids]
+    # Висячая привязка (этап удалён из рецептуры) трактуется как «без привязки» —
+    # иначе компонент молча исчез бы со всех этапов.
+    valid_ids = {rs["id"] for rs in r_stages}
+
+    def _bound(c):
+        return bool(c.get("stage_id")) and c["stage_id"] in valid_ids
+
+    out = []
+    # Недоставленные выходы: [{"name", "sort" (уровень производителя), "consumed_at"}]
+    pending: list = []
+    cur_level = None
+    for rs in r_stages:
+        level = rs["sort_order"] or 0
+        if cur_level is not None and level != cur_level:
+            # Сменился уровень — выходы, потреблённые на предыдущих уровнях, выбывают.
+            pending = [o for o in pending if o["consumed_at"] is None]
+        cur_level = level
+
+        stage_type = rs["stage_type"] or "assembly"
+        consuming = stage_type not in _NON_CONSUMING_STAGES
+        # Входы с предыдущих уровней (строго меньший sort_order — не от параллельных соседей).
+        deliverable = [o for o in pending if o["sort"] < level] if consuming else []
+
+        explicit = [c for c in all_comps if _bound(c) and c["stage_id"] == rs["id"]]
+        heuristic = [
+            c for c in all_comps
+            if not _bound(c)
+            and _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
+        ]
+        matched = explicit + heuristic
+        if not matched and consuming and not deliverable:
+            # Фолбэк как раньше («все компоненты»), но только непривязанными и только
+            # если у этапа нет входа-полуфабриката (иначе этап и так не пустой).
+            matched = [c for c in all_comps if not _bound(c)]
+        comps = _strip_stage_id(matched)
+        for o in reversed(deliverable):
+            comps.insert(0, {"name": o["name"], "qty": float(planned_qty or 0),
+                             "source": "stage_output", "production_type": ""})
+            o["consumed_at"] = level
+        out.append((rs, comps))
+
+        new_out = (rs.get("output_name") or "").strip()
+        if new_out:
+            pending.append({"name": new_out, "sort": level, "consumed_at": None})
+    return out
+
+
 def _initial_stage_status(sort_order: int, min_sort: int, depends_on_previous) -> str:
     """Начальный статус этапа при генерации.
     Первый уровень (min sort_order) — всегда активен (pending).
@@ -795,34 +866,30 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
     Этапы и партии помечаются order_id + order_item_id. Возвращает список созданных batch_id."""
     pn = _norm(product_name)
     comps_rows = (await db.execute(text(
-        "SELECT component_name, source, norm, warehouse_component_name, production_type "
+        "SELECT component_name, source, norm, warehouse_component_name, production_type, stage_id "
         "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
     ), {"pn": pn})).mappings().all()
     stage_comps = [
         {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
          "qty": float(r["norm"]) * planned_qty,
          "source": r["source"] or "warehouse",
-         "production_type": r["production_type"] or ""}
+         "production_type": r["production_type"] or "",
+         "stage_id": r["stage_id"]}
         for r in comps_rows
     ]
     r_stages = (await db.execute(text(
         "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
-        "required_role, depends_on_previous, transfer_qty "
+        "required_role, depends_on_previous, transfer_qty, output_name "
         "FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn ORDER BY sort_order, id"
     ), {"pn": pn})).mappings().all()
     if skipped_ids:
         r_stages = [rs for rs in r_stages if rs["id"] not in skipped_ids]
     if r_stages:
         min_sort = min((rs["sort_order"] or 0) for rs in r_stages)
-        for rs in r_stages:
-            stage_type = rs["stage_type"] or "assembly"
-            _matched = [
-                c for c in stage_comps
-                if _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
-            ]
-            stage_components = _matched if (_matched or stage_type in _NON_CONSUMING_STAGES) else stage_comps
+        for rs, stage_components in _assign_stage_components(r_stages, stage_comps, planned_qty, skipped_ids):
             db.add(OrderStage(
-                order_id=order_id, order_item_id=order_item_id, stage_type=stage_type,
+                order_id=order_id, order_item_id=order_item_id,
+                stage_type=rs["stage_type"] or "assembly",
                 stage_name=rs["stage_name"],
                 status=_initial_stage_status(rs["sort_order"] or 0, min_sort, rs["depends_on_previous"]),
                 sort_order=rs["sort_order"] or 0,
@@ -831,13 +898,14 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
                 transfer_qty=rs["transfer_qty"] or 0,
                 instructions=rs["instructions"],
                 components_json=json.dumps(stage_components, ensure_ascii=False),
+                output_name=(rs["output_name"] or "").strip() or None,
                 comment=rs["description"],
             ))
     else:
         db.add(OrderStage(
             order_id=order_id, order_item_id=order_item_id, stage_type="assembly",
             stage_name="Сборка", status="pending", sort_order=0,
-            components_json=json.dumps(stage_comps, ensure_ascii=False),
+            components_json=json.dumps(_strip_stage_id(stage_comps), ensure_ascii=False),
         ))
     types_rows = (await db.execute(text(
         "SELECT DISTINCT production_type FROM recipes "
@@ -1310,7 +1378,7 @@ async def start_order(order_id: int, request: Request):
     if existing_stages == 0:
         # Все компоненты рецептуры
         recipes = (await db.execute(text(
-            "SELECT component_name, source, norm, warehouse_component_name, production_type "
+            "SELECT component_name, source, norm, warehouse_component_name, production_type, stage_id "
             "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
         ), {"pn": _norm(order.product_name)})).mappings().all()
         all_components = [
@@ -1319,6 +1387,7 @@ async def start_order(order_id: int, request: Request):
                 "qty": float(r["norm"]) * order.planned_qty,
                 "source": r["source"] or "warehouse",
                 "production_type": r["production_type"] or "",
+                "stage_id": r["stage_id"],
             }
             for r in recipes
         ]
@@ -1326,7 +1395,7 @@ async def start_order(order_id: int, request: Request):
         # Этапы из recipe_stages
         recipe_stages = (await db.execute(text(
             "SELECT id, stage_name, stage_type, sort_order, description, instructions, "
-            "required_role, depends_on_previous, transfer_qty "
+            "required_role, depends_on_previous, transfer_qty, output_name "
             "FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn ORDER BY sort_order, id"
         ), {"pn": _norm(order.product_name)})).mappings().all()
 
@@ -1340,17 +1409,11 @@ async def start_order(order_id: int, request: Request):
 
         if recipe_stages:
             min_sort = min((rs["sort_order"] or 0) for rs in recipe_stages)
-            for rs in recipe_stages:
-                # Компоненты фильтруем по типу этапа
-                stage_type = rs["stage_type"] or "assembly"
-                _matched = [
-                    c for c in all_components
-                    if _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
-                ]
-                stage_components = _matched if (_matched or stage_type in _NON_CONSUMING_STAGES) else all_components
+            # Раскладка: явная привязка (stage_id) + эвристика; выход этапа → вход следующего
+            for rs, stage_components in _assign_stage_components(recipe_stages, all_components, order.planned_qty, _skipped):
                 db.add(OrderStage(
                     order_id=order_id,
-                    stage_type=stage_type,
+                    stage_type=rs["stage_type"] or "assembly",
                     stage_name=rs["stage_name"],
                     status=_initial_stage_status(rs["sort_order"] or 0, min_sort, rs["depends_on_previous"]),
                     sort_order=rs["sort_order"] or 0,
@@ -1359,6 +1422,7 @@ async def start_order(order_id: int, request: Request):
                     transfer_qty=rs["transfer_qty"] or 0,
                     instructions=rs["instructions"],
                     components_json=json.dumps(stage_components, ensure_ascii=False),
+                    output_name=(rs["output_name"] or "").strip() or None,
                     comment=rs["description"],
                 ))
         else:
@@ -1368,7 +1432,7 @@ async def start_order(order_id: int, request: Request):
                 stage_name="Сборка",
                 status="pending",
                 sort_order=0,
-                components_json=json.dumps(all_components, ensure_ascii=False),
+                components_json=json.dumps(_strip_stage_id(all_components), ensure_ascii=False),
             ))
         await db.commit()
 
@@ -2321,19 +2385,20 @@ async def generate_stages(order_id: int, request: Request):
     async def _build_for(pname: str, pqty: int, oiid):
         """Построить этапы рецептуры для одной позиции (order_item_id=oiid)."""
         recipes = (await db.execute(text(
-            "SELECT component_name, production_type, source, norm, warehouse_component_name "
+            "SELECT component_name, production_type, source, norm, warehouse_component_name, stage_id "
             "FROM recipes WHERE LOWER(TRIM(product_name))=:pn"
         ), {"pn": _norm(pname)})).mappings().all()
         all_components = [
             {"name": (r["warehouse_component_name"] or r["component_name"]).strip(),
              "qty": float(r["norm"]) * int(pqty or 0),
              "source": r["source"] or "warehouse",
-             "production_type": r["production_type"] or ""}
+             "production_type": r["production_type"] or "",
+             "stage_id": r["stage_id"]}
             for r in recipes
         ]
         rstages = (await db.execute(text(
             "SELECT id, stage_name, stage_type, sort_order, description, "
-            "required_role, depends_on_previous, transfer_qty, instructions "
+            "required_role, depends_on_previous, transfer_qty, instructions, output_name "
             "FROM recipe_stages WHERE LOWER(TRIM(product_name))=:pn ORDER BY sort_order, id"
         ), {"pn": _norm(pname)})).mappings().all()
         if _skipped:
@@ -2341,16 +2406,10 @@ async def generate_stages(order_id: int, request: Request):
         n = 0
         if rstages:
             min_sort = min((rs["sort_order"] or 0) for rs in rstages)
-            for rs in rstages:
-                stage_type = rs["stage_type"] or "assembly"
-                _matched = [
-                    c for c in all_components
-                    if _component_matches_stage(c.get("source", "warehouse"), stage_type, c.get("production_type", ""))
-                ]
-                stage_comps = _matched if (_matched or stage_type in _NON_CONSUMING_STAGES) else all_components
+            for rs, stage_comps in _assign_stage_components(rstages, all_components, pqty, _skipped):
                 db.add(OrderStage(
                     order_id=order_id, order_item_id=oiid,
-                    stage_type=stage_type, stage_name=rs["stage_name"],
+                    stage_type=rs["stage_type"] or "assembly", stage_name=rs["stage_name"],
                     status=_initial_stage_status(rs["sort_order"] or 0, min_sort, rs["depends_on_previous"]),
                     sort_order=rs["sort_order"] or 0,
                     required_role=rs["required_role"],
@@ -2358,6 +2417,7 @@ async def generate_stages(order_id: int, request: Request):
                     transfer_qty=rs["transfer_qty"] if rs["transfer_qty"] is not None else 0,
                     instructions=rs["instructions"],
                     components_json=json.dumps(stage_comps, ensure_ascii=False),
+                    output_name=(rs["output_name"] or "").strip() or None,
                     comment=rs["description"],
                 ))
                 n += 1
@@ -2365,7 +2425,7 @@ async def generate_stages(order_id: int, request: Request):
             db.add(OrderStage(
                 order_id=order_id, order_item_id=oiid,
                 stage_type="assembly", stage_name="Сборка", status="pending", sort_order=0,
-                components_json=json.dumps(all_components, ensure_ascii=False),
+                components_json=json.dumps(_strip_stage_id(all_components), ensure_ascii=False),
             ))
             n = 1
         return n

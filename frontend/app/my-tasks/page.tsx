@@ -217,20 +217,29 @@ export default function MyTasksPage() {
                             {/* Components */}
                             {stage.components && stage.components.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
-                                {stage.components.slice(0, 6).map((c, i) => (
-                                  <span key={i} style={{
-                                    fontSize: 11, padding: "2px 7px", borderRadius: 5,
-                                    background: c.source === "product" ? "#8b5cf615" : "var(--bg-primary)",
-                                    border: c.source === "product" ? "1px solid #8b5cf655" : "1px solid var(--border)",
-                                    color: c.source === "product" ? "#7c3aed" : "var(--text-secondary)",
-                                    fontWeight: c.source === "product" ? 600 : 400,
-                                  }} title={c.source === "product" ? "Полуфабрикат — взять со склада ГП" : undefined}>
-                                    {c.source === "product" ? "📦 " : ""}{c.name} × {c.qty}
-                                  </span>
-                                ))}
+                                {stage.components.slice(0, 6).map((c, i) => {
+                                  const isSemi = c.source === "product";
+                                  const isChain = c.source === "stage_output";
+                                  return (
+                                    <span key={i} style={{
+                                      fontSize: 11, padding: "2px 7px", borderRadius: 5,
+                                      background: isSemi ? "#8b5cf615" : isChain ? "#0ea5e915" : "var(--bg-primary)",
+                                      border: isSemi ? "1px solid #8b5cf655" : isChain ? "1px solid #0ea5e955" : "1px solid var(--border)",
+                                      color: isSemi ? "#7c3aed" : isChain ? "#0369a1" : "var(--text-secondary)",
+                                      fontWeight: isSemi || isChain ? 600 : 400,
+                                    }} title={isSemi ? "Полуфабрикат — взять со склада ГП" : isChain ? "Результат предыдущего этапа" : undefined}>
+                                      {isSemi ? "📦 " : isChain ? "⬅ " : ""}{c.name} × {c.qty}
+                                    </span>
+                                  );
+                                })}
                                 {stage.components.length > 6 && (
                                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>+{stage.components.length - 6} ещё</span>
                                 )}
+                              </div>
+                            )}
+                            {stage.output_name && (
+                              <div style={{ fontSize: 11.5, fontWeight: 600, color: "#7c3aed", marginBottom: 10 }}>
+                                Результат: → 📦 {stage.output_name}
                               </div>
                             )}
 

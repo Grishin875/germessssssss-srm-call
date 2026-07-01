@@ -9,6 +9,7 @@ class RecipeCreate(BaseModel):
     norm: float
     production_type: str
     source: str = "warehouse"             # warehouse | smd | engraving | 3d_print | purchase
+    stage_id: Optional[int] = None        # явная привязка к этапу рецептуры (recipe_stages.id)
     warehouse_component_name: Optional[str] = None
     designator: Optional[str] = None
     board_side: Optional[str] = None   # TOP | BOTTOM | None
@@ -92,6 +93,7 @@ class RecipeStageCreate(BaseModel):
     required_role: Optional[str] = None
     depends_on_previous: int = 1
     transfer_qty: int = 0
+    output_name: Optional[str] = None    # что выходит из этапа (полуфабрикат/результат)
 
 
 class RecipeStageUpdate(BaseModel):
@@ -103,6 +105,7 @@ class RecipeStageUpdate(BaseModel):
     required_role: Optional[str] = None
     depends_on_previous: Optional[int] = None
     transfer_qty: Optional[int] = None
+    output_name: Optional[str] = None    # "" очищает результат этапа
 
 
 class RecipeStageOut(BaseModel):
