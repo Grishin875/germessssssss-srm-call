@@ -115,7 +115,10 @@ export default function OtkPage() {
   async function acceptOrder(order: Order) {
     setActionSaving(order.id);
     try {
-      await api.updateOrder(order.id, { status: "Готов к отгрузке" });
+      // Принимаем заказ целиком: партии 'Принята' → 'готово к отгрузке', иначе
+      // на «Отгрузке» заказа не будет (тупик). Статус заказа переставит бэкенд.
+      await api.acceptOtkOrder(order.id);
+      toast.success("Заказ принят — партии готовы к отгрузке");
       loadOrders();
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
     setActionSaving(null);

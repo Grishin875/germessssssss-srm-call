@@ -259,8 +259,12 @@ async def otk_check(body: OtkCheckRequest, request: Request):
             defect_qty = body.defect_qty or 0
             if good_qty + defect_qty != released:
                 raise HTTPException(400, f"Сумма годных ({good_qty}) и брака ({defect_qty}) ≠ выпущенному ({released})")
-            if not body.records:
-                raise HTTPException(400, "При result=2 укажите записи о дефектах")
+            # Форма ОТК не собирает детальные записи о дефектах (designator/тип),
+            # поэтому records приходит пустым. Не блокируем частичный брак:
+            # ниже синтезируем одну обобщённую запись из defect_qty, чтобы брак
+            # был зафиксирован (СЦ находит партию по статусу, отчёты — по defect_qty).
+            if defect_qty <= 0:
+                raise HTTPException(400, "При частичном браке укажите количество брака (> 0)")
             new_status = "готово к отгрузке" if good_qty > 0 else "Передан в СЦ"
         elif r == 3:
             good_qty, defect_qty, new_status = 0, released, "брак"
@@ -337,16 +341,26 @@ async def otk_check(body: OtkCheckRequest, request: Request):
         await db.flush()  # получить sc.id, чтобы привязать defect_records к SC-партии
         defect_target_id = sc.id
 
-    if body.result == 2 and body.records:
-        for rec in body.records:
-            if rec.quantity <= 0:
-                continue
-            dr = DefectRecordModel(
-                otk_batch_id=defect_target_id, defect_category_id=rec.category_id,
-                otk_defect_type_id=rec.defect_type_id, designator=rec.designator,
-                quantity=rec.quantity, comment=rec.comment,
-            )
-            db.add(dr)
+    if body.result == 2 and defect_qty > 0:
+        if body.records:
+            for rec in body.records:
+                if rec.quantity <= 0:
+                    continue
+                dr = DefectRecordModel(
+                    otk_batch_id=defect_target_id, defect_category_id=rec.category_id,
+                    otk_defect_type_id=rec.defect_type_id, designator=rec.designator,
+                    quantity=rec.quantity, comment=rec.comment,
+                )
+                db.add(dr)
+        else:
+            # Форма ОТК не собирает детализацию — фиксируем одну обобщённую запись,
+            # чтобы брак не потерялся (детализацию можно добавить позже в СЦ).
+            db.add(DefectRecordModel(
+                otk_batch_id=defect_target_id, defect_category_id=None,
+                otk_defect_type_id=None, designator=None,
+                quantity=defect_qty,
+                comment=body.defect_comment or "Частичный брак (без детализации)",
+            ))
 
     if batch.order_id:
         is_defect = body.result == 3 or (body.result == 2 and defect_qty > 0)
@@ -516,6 +530,44 @@ async def ready_to_ship(request: Request):
         ORDER BY o.created_at DESC, otk.order_item_id
     """))).mappings().all()
     return list(rows)
+
+
+@router.post("/otk/accept-order/{order_id}")
+async def accept_order(order_id: int, request: Request):
+    """Руководитель принимает ВЕСЬ заказ с вкладки «На проверке ОТК».
+    Все партии заказа со статусом 'Принята' помечаются 'готово к отгрузке'
+    (как результат проверки «Всё годно»: good=released). Раньше order-level
+    кнопка меняла только статус заказа, а партии оставались 'Принята', поэтому
+    на «Отгрузке» заказа не было — тупик. Теперь партии реально становятся
+    отгружаемыми, а статус заказа переагрегирует статус-машина."""
+    u = _perm(request, "otk.view")
+    db = _db(request)
+    # Незакрытый брак/ремонт нельзя «принять» скопом — сначала переделка/СЦ.
+    blocked = (await db.execute(text(
+        "SELECT COUNT(*) FROM otk_batches WHERE order_id=:oid AND status IN ('брак','Передан в СЦ')"
+    ), {"oid": order_id})).scalar() or 0
+    if blocked:
+        raise HTTPException(400, "По заказу есть незакрытый брак или партии в СЦ — "
+                                 "сначала завершите ремонт/переделку")
+    batches = (await db.execute(
+        select(OtkBatch).where(OtkBatch.order_id == order_id, OtkBatch.status == "Принята")
+    )).scalars().all()
+    if not batches:
+        raise HTTPException(400, "Нет партий заказа, ожидающих приёмки ОТК (статус «Принята»)")
+    for b in batches:
+        released = int(b.released_qty or 0)
+        await db.execute(
+            update(OtkBatch).where(OtkBatch.id == b.id)
+            .values(good_qty=released, defect_qty=0, status="готово к отгрузке",
+                    check_date=func.now(), maker_id=str(u.id))
+        )
+    from app.services.order_status import auto_update_order_status
+    await auto_update_order_status(db, order_id)
+    await notify_roles(db, ["operator_shipment"],
+                       f"Заказ №{order_id} готов к отгрузке",
+                       "ОТК принял заказ целиком.", link="/shipment", type_="success")
+    await db.commit()
+    return {"success": True, "order_id": order_id, "accepted_batches": len(batches)}
 
 
 @router.post("/otk/ship-partial")

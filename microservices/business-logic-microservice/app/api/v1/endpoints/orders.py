@@ -915,12 +915,21 @@ async def _generate_item_production(db, order_id: int, order_item_id: int,
             components_json=json.dumps(_strip_stage_id(stage_comps), ensure_ascii=False),
             output_name=(product_name or "").strip() or None,
         ))
-    types_rows = (await db.execute(text(
+    # Производственные партии по типам производства. 'Сборка' — особый случай:
+    # если у изделия есть ДРУГОЙ тип (СМД/3D), монтаж — это второй этап ТЕХ ЖЕ
+    # изделий и ведётся ЭТАПАМИ (stage_type='assembly'). Отдельную 'Сборка'-партию
+    # тогда НЕ создаём — иначе те же изделия посчитались бы дважды в ОТК/отгрузке.
+    # Но если 'Сборка' — ЕДИНСТВЕННЫЙ тип производства (чистая ручная сборка без
+    # СМД), партию создаём: иначе штатная страница монтажника /assembly всегда пуста.
+    all_types = [t for (t,) in (await db.execute(text(
         "SELECT DISTINCT production_type FROM recipes "
-        "WHERE LOWER(TRIM(product_name)) = :pn AND production_type != 'Сборка'"
-    ), {"pn": pn})).all()
+        "WHERE LOWER(TRIM(product_name)) = :pn "
+        "AND production_type IS NOT NULL AND TRIM(production_type) != ''"
+    ), {"pn": pn})).all()]
+    non_assembly = [t for t in all_types if t != "Сборка"]
+    gen_types = non_assembly if non_assembly else all_types  # тут all_types = ['Сборка'] или []
     batch_ids = []
-    for (ptype,) in types_rows:
+    for ptype in gen_types:
         batch_id = await _gen_batch_id(db, ptype)
         db.add(ProductionBatch(
             batch_id=batch_id, product_name=product_name.strip(),
@@ -2085,6 +2094,18 @@ def _assert_stage_actor(stage, u):
         raise HTTPException(403, "Вы не назначены на этот этап")
 
 
+async def _ensure_order_started(db, order_id: int):
+    """Как только исполнитель БЕРЁТ или НАЧИНАЕТ этап, заказ 'Создан'→'В работе'.
+    Иначе (менеджер назначил этапы, но не нажал «Запустить в работу») заказ
+    застревает в 'Создан', оператор проходит все этапы, а финальная «Сдать в ОТК»
+    падает с 400 «сначала запустите заказ» — тупик, ведь кнопки запуска у оператора
+    нет. Условный UPDATE трогает строку только если она ещё 'Создан'."""
+    await db.execute(
+        update(Order).where(Order.id == order_id, Order.status == "Создан")
+        .values(status="В работе", updated_at=func.now())
+    )
+
+
 @router.patch("/orders/{order_id}/stages/{stage_id}/transfer")
 async def transfer_stage(order_id: int, stage_id: int, request: Request):
     """Исполнитель фиксирует кол-во переданных следующему этапу перед завершением."""
@@ -2134,6 +2155,7 @@ async def start_stage(order_id: int, stage_id: int, request: Request):
     )
     if res.rowcount == 0:
         raise HTTPException(409, "Этап уже начат другим пользователем")
+    await _ensure_order_started(db, order_id)
     await _audit(db, u, "stage", stage_id, "stage_started",
                  old_value="pending", new_value="in_progress",
                  details=json.dumps({"order_id": order_id, "stage": stage.stage_name}, ensure_ascii=False))
@@ -2181,6 +2203,7 @@ async def accept_stage(order_id: int, stage_id: int, request: Request):
     )
     if res.rowcount == 0:
         raise HTTPException(409, "Задача уже принята другим исполнителем")
+    await _ensure_order_started(db, order_id)
     await _audit(db, u, "stage", stage_id, "stage_accepted",
                  details=json.dumps({"order_id": order_id, "stage": stage.stage_name}, ensure_ascii=False))
     await db.commit()
@@ -3110,6 +3133,9 @@ async def complete_stage(order_id: int, stage_id: int, request: Request):
     )
     if res.rowcount == 0:
         raise HTTPException(409, "Этап уже завершён")
+    # Если менеджер не нажал «Запустить», а оператор всё равно выполнил этап —
+    # поднимаем заказ 'Создан'→'В работе', чтобы финальная сдача в ОТК не упёрлась.
+    await _ensure_order_started(db, order_id)
     await _audit(db, u, "stage", stage_id, "stage_completed",
                  old_value=stage.status, new_value="done",
                  details=json.dumps({"order_id": order_id, "stage": stage.stage_name,

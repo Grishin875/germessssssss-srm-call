@@ -448,6 +448,9 @@ export const api = {
   async otkCheck(data: object) {
     return request("/api/otk/check", { method: "POST", body: JSON.stringify(data) });
   },
+  async acceptOtkOrder(orderId: number) {
+    return request(`/api/otk/accept-order/${orderId}`, { method: "POST" });
+  },
   async getReadyToShip() {
     return request<Order[]>("/api/otk/ready-to-ship");
   },
@@ -541,6 +544,9 @@ export const api = {
   },
   async deleteRecipeStage(id: number) {
     return request(`/api/recipes/recipe-stages/${id}`, { method: "DELETE" });
+  },
+  async validateRecipe(productName: string) {
+    return request<RecipeValidation>(`/api/recipes/validate/${encodeURIComponent(productName)}`);
   },
 
   async getFinishedGoods() {
@@ -1242,6 +1248,22 @@ export interface Recipe {
   stock_on_warehouse?: number;
 }
 
+// ФАЗА 2: проверка рецептуры перед сохранением/запуском
+export interface RecipeValidationWarning {
+  level: "error" | "warn";
+  code: string;
+  message: string;
+  stage_id?: number;
+  recipe_id?: number;
+}
+export interface RecipeValidation {
+  product_name: string;
+  ok: boolean;
+  stage_count: number;
+  component_count: number;
+  warnings: RecipeValidationWarning[];
+}
+
 export interface Case {
   id: number;
   name: string;
@@ -1318,12 +1340,16 @@ export interface RecipeStage {
   stage_name: string;
   stage_type: string;
   sort_order: number;
-  description?: string;
-  instructions?: string;
-  required_role?: string;
+  description?: string | null;
+  instructions?: string | null;
+  required_role?: string | null;
   depends_on_previous?: number;
   transfer_qty?: number;
   output_name?: string | null;   // что выходит из этапа (полуфабрикат/результат)
+  // ФАЗА 2 (новая модель):
+  is_final?: boolean;                        // этап выпускает готовое изделие
+  require_transfer?: boolean;                // требовать ввод переданного кол-ва
+  rework_target_stage_id?: number | null;    // куда возвращать брак с этого гейта
 }
 
 export interface MyStage extends OrderStage {

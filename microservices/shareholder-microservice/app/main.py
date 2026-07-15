@@ -56,7 +56,10 @@ async def db_and_auth_middleware(request: Request, call_next) -> Response:
                         for k in ("id", "username", "role", "is_active", "departments_access", "user_permissions"):
                             setattr(u, k, row[k])
                         u.departments_access = u.departments_access or []
-                        u.user_permissions = u.user_permissions or {}
+                        from shared.core.permissions import resolve_permissions
+                        # Эффективные права (как в auth /me): дефолты роли + сохранённые.
+                        u.user_permissions = resolve_permissions(
+                            u.role, u.departments_access, u.user_permissions or {})
                         request.state.current_user = u
         try:
             response = await call_next(request)

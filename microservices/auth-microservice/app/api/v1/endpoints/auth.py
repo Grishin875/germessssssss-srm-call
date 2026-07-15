@@ -73,7 +73,22 @@ async def reset_password(body: ResetPasswordRequest, request: Request):
 
 @router.get("/me", response_model=UserOut)
 async def me(request: Request):
-    return _get_user(request)
+    user = _get_user(request)
+    # Эффективные права = дефолты роли + сохранённые (как при login). Иначе после
+    # перезагрузки страницы (F5 → /me) фронт получал бы только сырые сохранённые
+    # права, и пункты меню, которые даёт лишь дефолт роли, исчезали бы.
+    # ВАЖНО: user — ORM-объект в сессии, а middleware делает commit. Мутировать его
+    # напрямую нельзя (резолвнутый суперсет записался бы в сырую колонку user_permissions
+    # и «застыл» бы, сломав дальнейшее наследование дефолтов). Поэтому отвязываем объект
+    # от сессии (expunge) — тогда изменения не попадут в БД.
+    from app.services.permissions import resolve_permissions
+    db = _get_db(request)
+    deps = user.departments_access if isinstance(user.departments_access, list) else []
+    resolved = resolve_permissions(user.role, deps, user.user_permissions)
+    db.expunge(user)
+    user.departments_access = deps
+    user.user_permissions = resolved
+    return user
 
 
 @router.post("/change-password")
@@ -119,6 +134,9 @@ async def list_users(request: Request, include_inactive: str = "0"):
     q = q.order_by(UserModel.is_active.desc(), UserModel.created_at.desc())
     result = await db.execute(q)
     users = result.scalars().all()
+    # Отвязываем от сессии перед мутацией прав: middleware делает commit, и без expunge
+    # резолвнутые (superset) права записались бы обратно в user_permissions КАЖДОГО юзера.
+    db.expunge_all()
     for u in users:
         deps = u.departments_access if isinstance(u.departments_access, list) else []
         if is_admin:

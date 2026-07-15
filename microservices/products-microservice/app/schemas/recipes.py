@@ -94,6 +94,10 @@ class RecipeStageCreate(BaseModel):
     depends_on_previous: int = 1
     transfer_qty: int = 0
     output_name: Optional[str] = None    # что выходит из этапа (полуфабрикат/результат)
+    # ФАЗА 2 (новая модель):
+    is_final: bool = False               # этап выпускает готовое изделие
+    require_transfer: bool = False       # требовать ввод переданного кол-ва при завершении
+    rework_target_stage_id: Optional[int] = None  # куда возвращать брак с этого гейта
 
 
 class RecipeStageUpdate(BaseModel):
@@ -106,6 +110,9 @@ class RecipeStageUpdate(BaseModel):
     depends_on_previous: Optional[int] = None
     transfer_qty: Optional[int] = None
     output_name: Optional[str] = None    # "" очищает результат этапа
+    is_final: Optional[bool] = None
+    require_transfer: Optional[bool] = None
+    rework_target_stage_id: Optional[int] = None
 
 
 class RecipeStageOut(BaseModel):

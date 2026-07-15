@@ -62,6 +62,7 @@ async def db_and_auth_middleware(request: Request, call_next) -> Response:
                 )
                 row = result.mappings().one_or_none()
                 if row and row["is_active"]:
+                    from shared.core.permissions import resolve_permissions
                     class _User:
                         pass
                     u = _User()
@@ -70,7 +71,10 @@ async def db_and_auth_middleware(request: Request, call_next) -> Response:
                     u.role = row["role"]
                     u.is_active = row["is_active"]
                     u.departments_access = row["departments_access"] or []
-                    u.user_permissions = row["user_permissions"] or {}
+                    # Эффективные права (как в auth /me): дефолты роли + сохранённые.
+                    # Иначе кнопка на фронте есть, а warehouse отвечает 403.
+                    u.user_permissions = resolve_permissions(
+                        u.role, u.departments_access, row["user_permissions"] or {})
                     request.state.current_user = u
         try:
             response = await call_next(request)

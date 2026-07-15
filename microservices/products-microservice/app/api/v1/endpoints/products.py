@@ -57,6 +57,28 @@ async def _ensure_in_catalog(db, product_name: str):
     )
 
 
+async def _resolve_product_id(db, product_name: str):
+    """id изделия из каталога по имени (регистронезависимо, детерминированно min(id)).
+    Каталог гарантируется вызовом _ensure_in_catalog перед этим. ФАЗА 1/2: новые строки
+    рецептуры рождаются с product_id, а не только backfill старых при старте."""
+    name = (product_name or "").strip()
+    if not name:
+        return None
+    return (await db.execute(text(
+        "SELECT min(id) FROM product_catalog WHERE lower(trim(name)) = lower(trim(:n))"
+    ), {"n": name})).scalar()
+
+
+async def _resolve_operation_type_id(db, stage_type: str):
+    """id операции из справочника operation_types по коду stage_type (ФАЗА 1/2)."""
+    code = (stage_type or "").strip()
+    if not code:
+        return None
+    return (await db.execute(text(
+        "SELECT id FROM operation_types WHERE code = :c LIMIT 1"
+    ), {"c": code})).scalar()
+
+
 async def _ensure_in_recipe_registry(db, product_name: str, production_type: str = "SMD"):
     """Синхронизация Каталог → Рецептура: зарегистрировать изделие в производственном
     реестре (recipe_product_order). Атомарно, устойчиво к гонкам."""
@@ -268,6 +290,7 @@ async def calculate_order_demand(request: Request):
     # (source='product', зачёт ГП) + складские корпуса. Один остаток выделяется один раз.
     demand: dict = {}
     found_any = False
+    total_qty = 0.0   # суммарное кол-во изделий по позициям с рецептурой — для расчёта нормы
     for pos in positions:
         has_recipe = (await db.execute(text(
             "SELECT 1 FROM recipes WHERE LOWER(TRIM(product_name))=:pn LIMIT 1"
@@ -275,6 +298,7 @@ async def calculate_order_demand(request: Request):
         if not has_recipe:
             continue
         found_any = True
+        total_qty += float(pos["qty"] or 0)
         # Прямые складские компоненты — ровно то, что гейтит/резервирует create_order
         # (под-изделия в модели авто-подзаказа создаются отдельными заказами, не блокируют).
         sub = await direct_warehouse_demand(db, pos["product_name"], pos["qty"])
@@ -294,8 +318,12 @@ async def calculate_order_demand(request: Request):
         shortage = max(0, required - avail)
         if shortage > 0:
             can_produce = False
+        # Норма расхода на 1 изделие. При нескольких позициях — средневзвешенная
+        # (required / суммарное кол-во); для одного изделия = точная норма рецептуры.
+        norm = round(required / total_qty, 4) if total_qty else 0
         components.append({
             "component_name": wname, "production_type": "Склад", "source": "warehouse",
+            "norm": norm,
             "required": required, "available": avail,
             "shortage": shortage, "canProduce": shortage == 0,
         })
@@ -398,22 +426,28 @@ async def create_recipe_stage(body: RecipeStageCreate, request: Request):
     ), {"pn": _norm(body.product_name), "sn": _norm(body.stage_name)})).scalar()
     if dup:
         raise HTTPException(409, f"Этап «{body.stage_name}» у изделия уже существует")
+    await _ensure_in_catalog(db, body.product_name)
+    _stype = body.stage_type or "assembly"
     stage = RecipeStage(
         product_name=body.product_name.strip(),
+        product_id=await _resolve_product_id(db, body.product_name),
         stage_name=body.stage_name.strip(),
-        stage_type=body.stage_type or "assembly",
+        stage_type=_stype,
+        operation_type_id=await _resolve_operation_type_id(db, _stype),
         sort_order=body.sort_order,
         description=body.description,
         instructions=body.instructions,
         required_role=body.required_role,
         depends_on_previous=body.depends_on_previous,
         transfer_qty=body.transfer_qty,
+        require_transfer=body.require_transfer,
+        is_final=body.is_final,
+        rework_target_stage_id=body.rework_target_stage_id,
         output_name=(body.output_name or "").strip() or None,
     )
     db.add(stage)
     await db.flush()
     await db.refresh(stage)
-    await _ensure_in_catalog(db, body.product_name)
     await db.commit()
     return _m(stage)
 
@@ -469,11 +503,17 @@ async def product_stages_info(product_name: str, request: Request):
 async def update_recipe_stage(stage_id: int, body: RecipeStageUpdate, request: Request):
     _perm(request, "recipes.edit")
     db = _db(request)
-    vals = body.model_dump(exclude_none=True)
+    # exclude_unset (а НЕ exclude_none): обновляем ровно те поля, что прислал фронт —
+    # включая явный null для ОЧИСТКИ (роль→«любой», описание/инструкция→пусто,
+    # rework→«авто»). С exclude_none такие сбросы молча терялись.
+    vals = body.model_dump(exclude_unset=True)
     if not vals:
         raise HTTPException(400, "Нет данных для обновления")
     if "output_name" in vals:
-        vals["output_name"] = vals["output_name"].strip() or None  # "" очищает результат
+        vals["output_name"] = (vals["output_name"] or "").strip() or None  # "" / null очищает результат
+    if "stage_type" in vals:
+        # ФАЗА 1/2: держим ссылку на справочник операций в согласии с кодом типа
+        vals["operation_type_id"] = await _resolve_operation_type_id(db, vals["stage_type"])
     vals["updated_at"] = func.now()
     stmt = (
         update(RecipeStage)
@@ -502,6 +542,120 @@ async def delete_recipe_stage(stage_id: int, request: Request):
     await _cleanup_if_empty(db, row)
     await db.commit()
     return {"success": True}
+
+
+@router.get("/recipes/validate/{product_name}")
+async def validate_recipe(product_name: str, request: Request):
+    """ФАЗА 2: проверка рецептуры перед сохранением/запуском — «как она разложится».
+    Возвращает список предупреждений, чтобы технолог видел проблемы в рецептуре, а не
+    ловил их на живом заказе. Только чтение, ничего не меняет.
+    level: 'error' — рецептура развернётся криво; 'warn' — вероятная ошибка."""
+    _perm(request, "recipes.view")
+    db = _db(request)
+    pn = _norm(product_name)
+    stages = (await db.execute(text("""
+        SELECT rs.id, rs.stage_name, rs.stage_type, rs.operation_type_id, rs.is_final,
+               rs.sort_order, ot.consumes_components, ot.production_type AS op_ptype,
+               ot.display_name AS op_name
+        FROM recipe_stages rs
+        LEFT JOIN operation_types ot ON ot.id = rs.operation_type_id
+        WHERE LOWER(TRIM(rs.product_name)) = :pn
+        ORDER BY rs.sort_order, rs.id
+    """), {"pn": pn})).mappings().all()
+    comps = (await db.execute(text("""
+        SELECT id, component_name, production_type, source, stage_id
+        FROM recipes WHERE LOWER(TRIM(product_name)) = :pn
+    """), {"pn": pn})).mappings().all()
+
+    warnings: list[dict] = []
+    stage_ids = {s["id"] for s in stages}
+
+    # Неизвестный тип этапа (не сматчился со справочником операций).
+    for s in stages:
+        if s["operation_type_id"] is None:
+            warnings.append({"level": "error", "code": "unknown_stage_type",
+                             "message": f"Этап «{s['stage_name']}»: тип «{s['stage_type']}» отсутствует в справочнике операций.",
+                             "stage_id": s["id"]})
+
+    # Висячая привязка компонента к несуществующему этапу.
+    for c in comps:
+        if c["stage_id"] is not None and c["stage_id"] not in stage_ids:
+            warnings.append({"level": "error", "code": "dangling_stage_id",
+                             "message": f"Компонент «{c['component_name']}» привязан к несуществующему этапу.",
+                             "recipe_id": c["id"]})
+
+    # Есть компоненты, но нет этапов — маршрут не задан. Дальше пер-компонентные
+    # проверки не имеют смысла (иначе предупреждение на КАЖДЫЙ компонент).
+    if comps and not stages:
+        warnings.append({"level": "warn", "code": "no_stages",
+                         "message": "У изделия есть компоненты, но не задан ни один этап маршрута."})
+        return {"product_name": product_name,
+                "ok": not any(w["level"] == "error" for w in warnings),
+                "stage_count": 0, "component_count": len(comps), "warnings": warnings}
+
+    # Матчинг компонент→этап — та же логика, что при РЕАЛЬНОЙ разложке заказа
+    # (orders.py::_component_matches_stage): явный stage_id; source='product'→сборка;
+    # заданный production_type→по справочнику операций (op_ptype); пустой тип (легаси)
+    # →source-эвристика. Иначе валидатор ложно ругался бы на старые рецептуры, которые
+    # в заказе разложатся нормально.
+    _SRC_MAP = {
+        "smd": ("warehouse", "smd"),
+        "assembly": ("warehouse", "smd", "3d_print", "purchase", "case"),
+        "assembly_rea": ("warehouse", "smd", "3d_print", "purchase", "case"),
+        "3d_print": ("3d_print", "purchase"),
+        "engraving": ("warehouse", "engraving"),
+        "warehouse": ("warehouse",),
+    }
+
+    def _matches(c, s) -> bool:
+        if c["stage_id"] is not None:
+            return c["stage_id"] == s["id"]
+        if c["source"] == "product":
+            return s["stage_type"] in ("assembly", "assembly_rea")
+        if c["production_type"]:
+            return c["production_type"] == s["op_ptype"]
+        return (c["source"] or "warehouse") in _SRC_MAP.get(s["stage_type"], ("warehouse",))
+
+    # Компонент, который не попадёт ни на один этап (даже эвристикой).
+    orphan_comp = False
+    for c in comps:
+        if c["stage_id"] is not None and c["stage_id"] not in stage_ids:
+            continue  # уже отмечен как dangling выше
+        if not any(_matches(c, s) for s in stages):
+            orphan_comp = True
+            warnings.append({"level": "warn", "code": "component_without_stage",
+                             "message": f"Компонент «{c['component_name']}» не попадёт ни на один этап "
+                                        f"(тип «{c['production_type'] or '—'}» / источник «{c['source']}»).",
+                             "recipe_id": c["id"]})
+
+    # Потребляющий этап без компонентов. Учитываем фолбэк «все непривязанные →
+    # на потребляющий этап»: если есть компонент-сирота, он туда упадёт, поэтому
+    # предупреждаем только когда сирот нет (этап реально останется пустым).
+    if not orphan_comp:
+        for s in stages:
+            if s["consumes_components"] and not any(_matches(c, s) for c in comps):
+                warnings.append({"level": "warn", "code": "stage_without_components",
+                                 "message": f"Этап «{s['stage_name']}» должен брать компоненты, но к нему ничего не привязано.",
+                                 "stage_id": s["id"]})
+
+    # Финальный этап (выпускает готовое изделие): должен быть ровно один.
+    if stages:
+        finals = [s for s in stages if s["is_final"]]
+        if not finals:
+            max_sort = max((s["sort_order"] or 0) for s in stages)
+            tail = [s for s in stages if (s["sort_order"] or 0) == max_sort]
+            if len(tail) > 1:
+                warnings.append({"level": "warn", "code": "ambiguous_final",
+                                 "message": "Финальный этап не отмечен явно, а по порядку их несколько — "
+                                            "непонятно, какой выпускает готовое изделие."})
+        elif len(finals) > 1:
+            warnings.append({"level": "warn", "code": "multiple_final",
+                             "message": "Отмечено больше одного финального этапа — готовая продукция задвоится."})
+
+    has_error = any(w["level"] == "error" for w in warnings)
+    return {"product_name": product_name, "ok": not has_error,
+            "stage_count": len(stages), "component_count": len(comps),
+            "warnings": warnings}
 
 
 # ── Finished goods ────────────────────────────────────────────────────────────
@@ -581,7 +735,10 @@ async def create_recipe(body: RecipeCreate, request: Request):
     # Сначала пробуем обновить существующий рецепт (без учёта регистра), иначе вставляем.
     # stage_id НЕ трогаем, если не прислан (Excel-реимпорт/массовое создание не должны
     # стирать явные привязки компонент→этап). Сброс привязки — через PUT /recipes/{id}.
+    await _ensure_in_catalog(db, body.product_name)
+    pid = await _resolve_product_id(db, body.product_name)   # ФАЗА 1/2: связь по id, а не по тексту имени
     upd_vals = dict(norm=body.norm, source=body.source or "warehouse",
+                    product_id=pid,
                     warehouse_component_name=body.warehouse_component_name,
                     designator=body.designator, board_side=side,
                     component_size=body.component_size, updated_at=func.now())
@@ -602,13 +759,13 @@ async def create_recipe(body: RecipeCreate, request: Request):
             .values(component_name=body.component_name.strip(), product_name=body.product_name.strip(),
                     norm=body.norm, production_type=body.production_type,
                     source=body.source or "warehouse",
+                    product_id=pid,
                     stage_id=body.stage_id,
                     warehouse_component_name=body.warehouse_component_name,
                     designator=body.designator, board_side=side, component_size=body.component_size)
             .returning(Recipe)
         )
         row = (await db.execute(ins)).mappings().one_or_none()
-    await _ensure_in_catalog(db, body.product_name)
     await db.commit()
     return dict(row) if row else {}
 

@@ -434,7 +434,9 @@ async def adjust_case_stock(case_id: int, request: Request):
     _require_perm(request, "warehouse.edit")
     body = await request.json()
     delta = int(body.get("delta", 0))
-    note = body.get("note", "")
+    # Фронт (api.adjustCaseStock) шлёт причину в ключе "comment"; поддерживаем оба,
+    # иначе введённый пользователем комментарий терялся и писалась дефолтная запись.
+    note = body.get("comment") or body.get("note", "")
     try:
         return await warehouse_service.adjust_case_stock(_db(request), case_id, delta, note)
     except ValueError as e:

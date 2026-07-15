@@ -396,9 +396,9 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {readyShip.slice(0, 10).map((o) => (
+                {readyShip.slice(0, 10).map((o, idx) => (
                   <div
-                    key={o.id}
+                    key={`${o.id}-${idx}`}
                     onClick={() => router.push("/shipment")}
                     style={{
                       display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,

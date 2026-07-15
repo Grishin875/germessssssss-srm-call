@@ -330,7 +330,7 @@ export default function RecipesPage() {
   // RecipeStage form
   const [showStageModal, setShowStageModal] = useState(false);
   const [editRStage, setEditRStage] = useState<RecipeStage | null>(null);
-  const [rsForm, setRsForm] = useState({ product_name: "", stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "" });
+  const [rsForm, setRsForm] = useState({ product_name: "", stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "", is_final: false, require_transfer: false, rework_target_stage_id: "" });
 
   // System roles for stage form
   const [systemRoles, setSystemRoles] = useState<SystemRoleItem[]>([]);
@@ -343,6 +343,9 @@ export default function RecipesPage() {
   const [cpDepartments, setCpDepartments] = useState<string[]>(["SMD"]);
   const [cpRows, setCpRows] = useState<CompRow[]>([emptyRow()]);
   const [cpStages, setCpStages] = useState<StageRow[]>([]);
+  // ФАЗА 2: проверка рецептуры («как разложится»)
+  const [validationResult, setValidationResult] = useState<Record<string, import("../../lib/api").RecipeValidation>>({});
+  const [validating, setValidating] = useState<string | null>(null);
   const [cpSaving, setCpSaving] = useState(false);
   const [cpError, setCpError] = useState("");
 
@@ -506,15 +509,45 @@ export default function RecipesPage() {
     setCpSaving(true); setCpError("");
     try {
       const pname = cpProductName.trim();
-      // Build component → stage_type mapping from stage assignments
-      const componentStageMap: Record<string, string> = {};
-      cpStages.forEach(s => {
-        (s.components ?? []).forEach(cname => { componentStageMap[cname] = s.stage_type; });
+      // 1. Сохраняем ЭТАПЫ ПЕРВЫМИ — чтобы получить их id и привязать к ним компоненты.
+      // Результат последнего этапа по умолчанию = само изделие (конечный продукт),
+      // промежуточных — что ввёл пользователь (полуфабрикат).
+      const validStages = cpStages.filter(s => s.stage_type);
+      const maxOrder = validStages.length ? Math.max(...validStages.map(s => s.sort_order)) : 0;
+      // allSettled: если изделие существует и часть этапов уже есть (409 на дубле имени),
+      // это НЕ должно ронять сохранение компонентов (BOM важнее). Новые этапы создаются,
+      // существующие — пропускаются, компоненты сохраняются в любом случае.
+      const finalsAtMax = validStages.filter(x => x.sort_order === maxOrder).length;
+      const stageResults = await Promise.allSettled(validStages.map(s => api.createRecipeStage({
+        product_name: pname,
+        stage_name: s.stage_name.trim() || s.stage_type,
+        stage_type: s.stage_type,
+        sort_order: s.sort_order,
+        required_role: s.required_role || undefined,
+        depends_on_previous: s.depends_on_previous,
+        instructions: s.instructions || undefined,
+        // Финальным помечаем последний этап, только если он единственный на своём уровне
+        // (иначе «два финальных» — пусть технолог отметит явно).
+        is_final: s.sort_order === maxOrder && finalsAtMax === 1,
+        output_name: (s.output_name ?? "").trim() || (s.sort_order === maxOrder ? pname : undefined),
+      })));
+      const stageErrors = stageResults.filter(r => r.status === "rejected").length;
+      // Привязка компонент → id созданного этапа (из галочек мастера) + тип этапа
+      const componentStageId: Record<string, number> = {};
+      const componentStageType: Record<string, string> = {};
+      validStages.forEach((s, i) => {
+        const r = stageResults[i];
+        const created = r.status === "fulfilled" ? r.value : null;
+        (s.components ?? []).forEach(cname => {
+          if (created?.id) componentStageId[cname] = created.id;
+          componentStageType[cname] = s.stage_type;
+        });
       });
-      // 1. Save components
+      // 2. Сохраняем КОМПОНЕНТЫ со stage_id — привязка из мастера теперь сохраняется
+      // (конец «двойной работе»: не нужно потом заново привязывать каждый компонент вручную).
       await Promise.all(validRows.map(row => {
         const cname = row.component_name.trim();
-        const stageType = componentStageMap[cname];
+        const stageType = componentStageType[cname];
         const prodType = (stageType && STAGE_TO_PRODUCTION_TYPE[stageType]) || productType;
         return api.createRecipe({
           component_name: cname,
@@ -522,24 +555,14 @@ export default function RecipesPage() {
           norm: Number(row.norm),
           production_type: prodType,
           source: "warehouse",
+          stage_id: componentStageId[cname] ?? undefined,
           warehouse_component_name: row.warehouse_component_name || undefined,
           designator: row.designator || undefined,
           board_side: stageType === "smd" ? (row.board_side || undefined) : undefined,
         });
       }));
-      // 2. Save stages. Результат последнего этапа по умолчанию = само изделие
-      // (конечный продукт), промежуточных — что ввёл пользователь (полуфабрикат).
-      const validStages = cpStages.filter(s => s.stage_type);
-      const maxOrder = validStages.length ? Math.max(...validStages.map(s => s.sort_order)) : 0;
-      await Promise.all(validStages.map(s => api.createRecipeStage({
-        product_name: pname,
-        stage_name: s.stage_name.trim() || s.stage_type,
-        stage_type: s.stage_type,
-        sort_order: s.sort_order,
-        required_role: s.required_role || undefined,
-        depends_on_previous: s.depends_on_previous,
-        output_name: (s.output_name ?? "").trim() || (s.sort_order === maxOrder ? pname : undefined),
-      })));
+      if (stageErrors > 0)
+        toast.info(`Часть этапов (${stageErrors}) уже была у изделия — пропущены; компоненты сохранены.`);
       setShowCreateProduct(false);
       setCpProductName(""); setCpRows([emptyRow()]); setProductType("SMD"); setCpStages([]);
       setCpDepartments(["SMD"]);
@@ -557,11 +580,15 @@ export default function RecipesPage() {
         stage_name: rsForm.stage_name.trim(),
         stage_type: rsForm.stage_type,
         sort_order: Number(rsForm.sort_order),
-        description: rsForm.description || undefined,
-        instructions: rsForm.instructions || undefined,
-        required_role: rsForm.required_role || undefined,
+        // null (а не undefined) — чтобы бэкенд реально ОЧИСТИЛ поле при сбросе.
+        description: rsForm.description || null,
+        instructions: rsForm.instructions || null,
+        required_role: rsForm.required_role || null,
         depends_on_previous: Number(rsForm.depends_on_previous),
-        transfer_qty: Number(rsForm.transfer_qty),
+        transfer_qty: rsForm.require_transfer ? 1 : 0,   // legacy-поле в согласии с require_transfer
+        require_transfer: rsForm.require_transfer,
+        is_final: rsForm.is_final,
+        rework_target_stage_id: rsForm.rework_target_stage_id ? Number(rsForm.rework_target_stage_id) : null,
         output_name: rsForm.output_name.trim(),   // "" очищает результат этапа
       };
       if (editRStage) await api.updateRecipeStage(editRStage.id, data);
@@ -588,6 +615,19 @@ export default function RecipesPage() {
   if (loading || !user) return null;
 
   // Изделия = из рецептур + из каталога (двусторонняя связь рецептура↔каталог)
+  async function handleValidate(product: string) {
+    setValidating(product);
+    try {
+      const res = await api.validateRecipe(product);
+      setValidationResult(prev => ({ ...prev, [product]: res }));
+      const errors = res.warnings.filter(w => w.level === "error").length;
+      if (!res.warnings.length) toast.success("Рецептура в порядке — развернётся корректно");
+      else if (errors) toast.error(`Ошибок: ${errors}, предупреждений: ${res.warnings.length - errors}`);
+      else toast.info(`Предупреждений: ${res.warnings.length}`);
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : "Ошибка"); }
+    setValidating(null);
+  }
+
   const products = [...new Set([...recipes.map(r => r.product_name), ...catalog.map(c => c.name)])].sort();
 
   // Полуфабрикаты (для source='product'): изделия с их доступным остатком на складе ГП.
@@ -626,6 +666,8 @@ export default function RecipesPage() {
 
   return (
     <AppLayout>
+      {/* Общий datalist изделий (в DOM всегда) — автоподстановка имени во всех окнах */}
+      <datalist id="product-list">{products.map(p => <option key={p} value={p} />)}</datalist>
       <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
 
         {/* Header */}
@@ -697,10 +739,16 @@ export default function RecipesPage() {
                       <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{(rsByProduct[product] || []).length} этап.</span>
                     )}
                     <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{items.length} комп.</span>
+                    <button
+                      onClick={() => handleValidate(product)}
+                      disabled={validating === product}
+                      title="Проверить рецептуру: как она разложится в производство"
+                      style={{ fontSize: 12, fontWeight: 600, color: "#0ea5e9", background: "none", border: "none", cursor: "pointer" }}
+                    >{validating === product ? "…" : "🔍 Проверить"}</button>
                     {hasPermission("recipes.edit") && (<>
                       <button
                         onClick={() => {
-                          setRsForm({ product_name: product, stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "" });
+                          setRsForm({ product_name: product, stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "", is_final: false, require_transfer: false, rework_target_stage_id: "" });
                           setEditRStage(null); setShowStageModal(true); setError("");
                         }}
                         style={{ fontSize: 12, fontWeight: 600, color: "#8b5cf6", background: "none", border: "none", cursor: "pointer" }}
@@ -753,16 +801,46 @@ export default function RecipesPage() {
                     </button>
                   </div>
                 }>
+                  {validationResult[product] && (
+                    <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 8,
+                      background: validationResult[product].warnings.length === 0 ? "rgba(16,185,129,0.08)"
+                        : validationResult[product].ok ? "rgba(245,158,11,0.08)" : "rgba(239,68,68,0.08)",
+                      border: `1px solid ${validationResult[product].warnings.length === 0 ? "#10b98140"
+                        : validationResult[product].ok ? "#f59e0b40" : "#ef444440"}` }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700 }}>
+                          {validationResult[product].warnings.length === 0
+                            ? "✓ Рецептура в порядке"
+                            : `Проверка: ${validationResult[product].warnings.length} замеч. (${validationResult[product].component_count} комп., ${validationResult[product].stage_count} этап.)`}
+                        </span>
+                        <button onClick={() => setValidationResult(prev => { const n = { ...prev }; delete n[product]; return n; })}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: 12 }}>✕</button>
+                      </div>
+                      {validationResult[product].warnings.map((w, i) => (
+                        <div key={i} style={{ fontSize: 12, marginTop: 6, color: w.level === "error" ? "#ef4444" : "#d97706" }}>
+                          {w.level === "error" ? "⛔ " : "⚠ "}{w.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {collapsed.has(product) ? (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                      {(rsByProduct[product] || []).sort((a, b) => a.sort_order - b.sort_order).map(rs => {
-                        const st = STAGE_TYPE_LABELS[rs.stage_type] ?? STAGE_TYPE_LABELS.other;
-                        return (
-                          <span key={rs.id} style={{ fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: 20, background: st.color + "1c", color: st.color }}>
-                            {rs.stage_name}
-                          </span>
-                        );
-                      })}
+                      {(() => {
+                        const sorted = (rsByProduct[product] || []).slice().sort((a, b) => a.sort_order - b.sort_order);
+                        return sorted.map((rs, i) => {
+                          const st = STAGE_TYPE_LABELS[rs.stage_type] ?? STAGE_TYPE_LABELS.other;
+                          // → между последовательными, + между параллельными (одинаковый порядок)
+                          const sep = i === 0 ? null : (sorted[i - 1].sort_order === rs.sort_order ? "+" : "→");
+                          return (
+                            <span key={rs.id} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              {sep && <span style={{ color: "var(--text-muted)", fontSize: 12, fontWeight: 700 }}>{sep}</span>}
+                              <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: 20, background: st.color + "1c", color: st.color }}>
+                                {rs.stage_name}{rs.is_final ? " ★" : ""}
+                              </span>
+                            </span>
+                          );
+                        });
+                      })()}
                       {(rsByProduct[product] || []).length === 0 && (
                         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Свёрнуто · {items.length} компонентов</span>
                       )}
@@ -822,6 +900,9 @@ export default function RecipesPage() {
                                       depends_on_previous: String(rs.depends_on_previous ?? 1),
                                       transfer_qty: String(rs.transfer_qty ?? 0),
                                       output_name: rs.output_name || "",
+                                      is_final: !!rs.is_final,
+                                      require_transfer: rs.require_transfer ?? (Number(rs.transfer_qty ?? 0) === 1),
+                                      rework_target_stage_id: rs.rework_target_stage_id ? String(rs.rework_target_stage_id) : "",
                                     });
                                     setShowStageModal(true); setError("");
                                   }}
@@ -945,7 +1026,12 @@ export default function RecipesPage() {
           {cpError && <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">{cpError}</div>}
           <div>
             <label>Название изделия *</label>
-            <input value={cpProductName} onChange={e => setCpProductName(e.target.value)} placeholder="Например: ГМ-10" />
+            <input list="product-list" value={cpProductName} onChange={e => setCpProductName(e.target.value)} placeholder="Например: ГМ-10 (существующие — из подсказки)" />
+            {cpProductName.trim() && products.some(p => p.toLowerCase() === cpProductName.trim().toLowerCase()) && (
+              <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
+                ⚠ Изделие с таким именем уже есть — компоненты/этапы добавятся к нему.
+              </div>
+            )}
           </div>
 
           {/* Отделы-исполнители — мультивыбор */}
@@ -1080,7 +1166,7 @@ export default function RecipesPage() {
           </div>
           <div>
             <label>Изделие *</label>
-            <input value={form.product_name} onChange={e => setForm({ ...form, product_name: e.target.value, stage_id: "" })} />
+            <input list="product-list" value={form.product_name} onChange={e => setForm({ ...form, product_name: e.target.value, stage_id: "" })} placeholder="Выберите из каталога или введите новое" />
           </div>
           <div>
             <label>Норма *</label>
@@ -1099,15 +1185,22 @@ export default function RecipesPage() {
             <input value={form.designator} onChange={e => setForm({ ...form, designator: e.target.value })} />
           </div>
           <div>
-            <label>Тип производства</label>
-            <select value={form.production_type} onChange={e => setForm({ ...form, production_type: e.target.value })}>
+            <label>Тип производства {form.stage_id && <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(наследуется от этапа)</span>}</label>
+            <select value={form.production_type} disabled={!!form.stage_id}
+              onChange={e => setForm({ ...form, production_type: e.target.value })}>
               {["SMD","Сборка","Гравировка","3D Печать"].map(t => <option key={t}>{t}</option>)}
             </select>
           </div>
           {(rsByProduct[form.product_name] || []).length > 0 && (
             <div>
               <label>Этап (куда добавляется компонент)</label>
-              <select value={form.stage_id} onChange={e => setForm({ ...form, stage_id: e.target.value })}>
+              <select value={form.stage_id} onChange={e => {
+                // Одна ручка маршрутизации: выбрал этап → тип производства подставляется из него.
+                const sid = e.target.value;
+                const st = (rsByProduct[form.product_name] || []).find(s => String(s.id) === sid);
+                const pt = st ? (STAGE_TO_PRODUCTION_TYPE[st.stage_type] || form.production_type) : form.production_type;
+                setForm({ ...form, stage_id: sid, production_type: pt });
+              }}>
                 <option value="">— авто (по типу/источнику) —</option>
                 {(rsByProduct[form.product_name] || []).sort((a, b) => a.sort_order - b.sort_order).map(s => (
                   <option key={s.id} value={String(s.id)}>{s.sort_order}. {s.stage_name}</option>
@@ -1166,7 +1259,12 @@ export default function RecipesPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label>Тип этапа</label>
-              <select value={rsForm.stage_type} onChange={e => setRsForm({ ...rsForm, stage_type: e.target.value })}>
+              <select value={rsForm.stage_type} onChange={e => {
+                const t = e.target.value;
+                const isControl = ["otk", "aoi", "batch_check"].includes(t);
+                // rework-цель имеет смысл только для контрольных этапов — при смене на другой тип очищаем
+                setRsForm({ ...rsForm, stage_type: t, rework_target_stage_id: isControl ? rsForm.rework_target_stage_id : "" });
+              }}>
                 {stageTypes.filter(s => s.is_active).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             </div>
@@ -1207,17 +1305,38 @@ export default function RecipesPage() {
               💡 <strong>Параллельные этапы:</strong> несколько этапов с одинаковым «Порядком» и «Параллельно» будут выполняться одновременно. Создайте столько этапов с одинаковым sort_order, сколько нужно отделов.
             </div>
           )}
-          <div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
               <input
                 type="checkbox"
-                checked={rsForm.transfer_qty === "1"}
-                onChange={e => setRsForm({ ...rsForm, transfer_qty: e.target.checked ? "1" : "0" })}
+                checked={rsForm.require_transfer}
+                onChange={e => setRsForm({ ...rsForm, require_transfer: e.target.checked })}
                 style={{ width: 15, height: 15 }}
               />
-              <span>Фиксировать передачу кол-ва следующему этапу</span>
+              <span>Требовать ввод переданного количества при завершении этапа</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={rsForm.is_final}
+                onChange={e => setRsForm({ ...rsForm, is_final: e.target.checked })}
+                style={{ width: 15, height: 15 }}
+              />
+              <span>Финальный этап — выпускает готовое изделие</span>
             </label>
           </div>
+          {["otk", "aoi", "batch_check"].includes(rsForm.stage_type) && (
+            <div>
+              <label>Куда возвращать брак с этого контроля</label>
+              <select value={rsForm.rework_target_stage_id} onChange={e => setRsForm({ ...rsForm, rework_target_stage_id: e.target.value })}>
+                <option value="">— авто (по умолчанию) —</option>
+                {(rsByProduct[rsForm.product_name] || [])
+                  .filter(s => !["otk", "aoi", "batch_check"].includes(s.stage_type))
+                  .sort((a, b) => a.sort_order - b.sort_order)
+                  .map(s => <option key={s.id} value={String(s.id)}>{s.sort_order}. {s.stage_name}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             <label>Краткое описание</label>
             <input value={rsForm.description} onChange={e => setRsForm({ ...rsForm, description: e.target.value })} placeholder="Необязательно" />

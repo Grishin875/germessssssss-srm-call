@@ -10,6 +10,7 @@ export interface StageRow {
   depends_on_previous: number; // 1=последовательно, 0=параллельно
   components: string[];        // выбранные комплектующие для этапа
   output_name: string;         // что выходит из этапа (полуфабрикат); пусто у последнего = конечный продукт
+  instructions?: string;       // ФАЗА 2: инструкция исполнителю (раньше мастер её терял)
 }
 
 interface StageType {
@@ -31,7 +32,7 @@ interface Props {
 function uid() { return Math.random().toString(36).slice(2); }
 
 export function newStageRow(stage_type = "assembly", sort_order = 0, stage_name = "", parallel = false): StageRow {
-  return { _key: uid(), stage_name, stage_type, required_role: "", sort_order, depends_on_previous: parallel ? 0 : 1, components: [], output_name: "" };
+  return { _key: uid(), stage_name, stage_type, required_role: "", sort_order, depends_on_previous: parallel ? 0 : 1, components: [], output_name: "", instructions: "" };
 }
 
 // Group stages by sort_order to show parallel groups
@@ -212,6 +213,18 @@ export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, avail
                           Станет входом следующего этапа: «взять {row.output_name.trim() || "результат"} + добавить компоненты»
                         </div>
                       )}
+                    </div>
+
+                    {/* Instructions — раньше терялись при создании через мастер */}
+                    <div>
+                      <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 3 }}>Инструкция исполнителю (необязательно)</label>
+                      <textarea
+                        value={row.instructions ?? ""}
+                        onChange={e => update(row._key, "instructions", e.target.value)}
+                        rows={2}
+                        placeholder="Как выполнять этап…"
+                        style={{ fontSize: 12, width: "100%", padding: "4px 8px", resize: "vertical" }}
+                      />
                     </div>
 
                     {/* Components */}
