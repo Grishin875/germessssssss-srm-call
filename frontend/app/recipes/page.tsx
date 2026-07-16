@@ -330,6 +330,8 @@ export default function RecipesPage() {
   // RecipeStage form
   const [showStageModal, setShowStageModal] = useState(false);
   const [editRStage, setEditRStage] = useState<RecipeStage | null>(null);
+  // ФАЗА 2: компоненты, отмеченные для этапа (галочки в окне этапа)
+  const [stageCompIds, setStageCompIds] = useState<Set<number>>(new Set());
   const [rsForm, setRsForm] = useState({ product_name: "", stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "", is_final: false, require_transfer: false, rework_target_stage_id: "" });
 
   // System roles for stage form
@@ -591,8 +593,10 @@ export default function RecipesPage() {
         rework_target_stage_id: rsForm.rework_target_stage_id ? Number(rsForm.rework_target_stage_id) : null,
         output_name: rsForm.output_name.trim(),   // "" очищает результат этапа
       };
-      if (editRStage) await api.updateRecipeStage(editRStage.id, data);
-      else await api.createRecipeStage(data);
+      const saved = editRStage ? await api.updateRecipeStage(editRStage.id, data) : await api.createRecipeStage(data);
+      const stageId = editRStage ? editRStage.id : saved.id;
+      // Привязать выбранные галочками компоненты к этому этапу (и снять у снятых)
+      await api.setStageComponents(stageId, Array.from(stageCompIds));
       setShowStageModal(false); setEditRStage(null);
       load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Ошибка"); }
@@ -749,6 +753,7 @@ export default function RecipesPage() {
                       <button
                         onClick={() => {
                           setRsForm({ product_name: product, stage_name: "", stage_type: "assembly", sort_order: "0", description: "", instructions: "", required_role: "", depends_on_previous: "1", transfer_qty: "0", output_name: "", is_final: false, require_transfer: false, rework_target_stage_id: "" });
+                          setStageCompIds(new Set());
                           setEditRStage(null); setShowStageModal(true); setError("");
                         }}
                         style={{ fontSize: 12, fontWeight: 600, color: "#8b5cf6", background: "none", border: "none", cursor: "pointer" }}
@@ -904,6 +909,7 @@ export default function RecipesPage() {
                                       require_transfer: rs.require_transfer ?? (Number(rs.transfer_qty ?? 0) === 1),
                                       rework_target_stage_id: rs.rework_target_stage_id ? String(rs.rework_target_stage_id) : "",
                                     });
+                                    setStageCompIds(new Set(recipes.filter(r => r.product_name === rs.product_name && r.stage_id === rs.id).map(r => r.id)));
                                     setShowStageModal(true); setError("");
                                   }}
                                   style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
@@ -1285,6 +1291,54 @@ export default function RecipesPage() {
             />
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
               Результат автоматически станет входом следующего этапа: «взять {rsForm.output_name.trim() || "полуфабрикат"} + добавить компоненты этапа».
+            </div>
+          </div>
+
+          {/* Комплектующие этапа — галочки прямо здесь: под каждый этап и выход, и детали в ОДНОМ окне */}
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span>Комплектующие этого этапа</span>
+              {stageCompIds.size > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "1px 9px", borderRadius: 20, background: "var(--primary)", color: "#fff" }}>{stageCompIds.size}</span>
+              )}
+            </label>
+            {(() => {
+              const comps = recipes.filter(r => r.product_name === rsForm.product_name);
+              if (!comps.length) return (
+                <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "12px 14px", background: "var(--bg-secondary)", border: "1px dashed var(--border)", borderRadius: 10 }}>
+                  У изделия ещё нет компонентов — добавьте их кнопкой «+ Компонент».
+                </div>
+              );
+              return (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 7, maxHeight: 190, overflowY: "auto", padding: 12, background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 12 }}>
+                  {comps.map(c => {
+                    const on = stageCompIds.has(c.id);
+                    const otherStage = !on && c.stage_id != null && c.stage_id !== (editRStage?.id ?? -1);
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setStageCompIds(prev => { const n = new Set(prev); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; })}
+                        title={otherStage ? "Сейчас на другом этапе — отметка перенесёт сюда" : (on ? "Убрать с этапа" : "Добавить на этап")}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 500,
+                          padding: "6px 12px", borderRadius: 20, cursor: "pointer", transition: "all .13s", lineHeight: 1.2,
+                          background: on ? "var(--primary)" : "var(--bg)",
+                          color: on ? "#fff" : "var(--text)",
+                          border: `1.5px solid ${on ? "var(--primary)" : otherStage ? "#f59e0b" : "var(--border)"}`,
+                          boxShadow: on ? "0 1px 4px rgba(0,0,0,0.12)" : "none",
+                        }}
+                      >
+                        <span style={{ fontSize: 12, fontWeight: 800, opacity: on ? 1 : 0.6 }}>{on ? "✓" : otherStage ? "↪" : "+"}</span>
+                        <span>{c.component_name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5 }}>
+              Отметь детали, которые монтируются на этом этапе. <span style={{ color: "#f59e0b", fontWeight: 700 }}>↪</span> — деталь сейчас на другом этапе (отметка перенесёт сюда).
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

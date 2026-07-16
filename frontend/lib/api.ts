@@ -545,6 +545,12 @@ export const api = {
   async deleteRecipeStage(id: number) {
     return request(`/api/recipes/recipe-stages/${id}`, { method: "DELETE" });
   },
+  async setStageComponents(stageId: number, recipeIds: number[]) {
+    return request<{ success: boolean; assigned: number; stage_id: number }>(
+      `/api/recipes/recipe-stages/${stageId}/components`,
+      { method: "PUT", body: JSON.stringify({ recipe_ids: recipeIds }) },
+    );
+  },
   async validateRecipe(productName: string) {
     return request<RecipeValidation>(`/api/recipes/validate/${encodeURIComponent(productName)}`);
   },

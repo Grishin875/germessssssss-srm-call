@@ -528,6 +528,39 @@ async def update_recipe_stage(stage_id: int, body: RecipeStageUpdate, request: R
     return dict(row)
 
 
+@router.put("/recipes/recipe-stages/{stage_id}/components")
+async def set_stage_components(stage_id: int, request: Request):
+    """ФАЗА 2: назначить компоненты этапу «галочками» из редактора этапа.
+    Проставляет stage_id отмеченным компонентам изделия и СНИМАЕТ привязку у тех,
+    что были на этом этапе, но сейчас не отмечены. Скоуп — компоненты того же изделия."""
+    _perm(request, "recipes.edit")
+    db = _db(request)
+    body = await request.json()
+    ids = [int(x) for x in (body.get("recipe_ids") or [])]
+    stage = (await db.execute(
+        select(RecipeStage).where(RecipeStage.id == stage_id)
+    )).scalar_one_or_none()
+    if not stage:
+        raise HTTPException(404, "Этап не найден")
+    pn = _norm(stage.product_name)
+    # 1) Снять привязку у компонентов, которые были на этапе, но теперь не отмечены.
+    clear_q = update(Recipe).where(Recipe.stage_id == stage_id)
+    if ids:
+        clear_q = clear_q.where(Recipe.id.notin_(ids))
+    await db.execute(clear_q.values(stage_id=None, updated_at=func.now()))
+    # 2) Привязать отмеченные компоненты ЭТОГО изделия к этапу.
+    assigned = 0
+    if ids:
+        res = await db.execute(
+            update(Recipe)
+            .where(Recipe.id.in_(ids), func.lower(func.trim(Recipe.product_name)) == pn)
+            .values(stage_id=stage_id, updated_at=func.now())
+        )
+        assigned = res.rowcount or 0
+    await db.commit()
+    return {"success": True, "assigned": assigned, "stage_id": stage_id}
+
+
 @router.delete("/recipes/recipe-stages/{stage_id}")
 async def delete_recipe_stage(stage_id: int, request: Request):
     _perm(request, "recipes.edit")
