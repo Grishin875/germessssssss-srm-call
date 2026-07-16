@@ -236,19 +236,20 @@ export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, avail
                             <span style={{ marginLeft: 6, color: "#3b82f6", fontWeight: 600 }}>({rowComponents.length} выбрано)</span>
                           )}
                         </label>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                           {availableComponents.map(name => {
                             const checked = rowComponents.includes(name);
                             return (
                               <label
                                 key={name}
                                 style={{
-                                  display: "inline-flex", alignItems: "center", gap: 4,
-                                  fontSize: 11, padding: "2px 7px", borderRadius: 12, cursor: "pointer",
-                                  background: checked ? "#dbeafe" : "var(--bg)",
-                                  border: `1px solid ${checked ? "#3b82f6" : "var(--border)"}`,
-                                  color: checked ? "#1d4ed8" : "var(--text-muted)",
-                                  userSelect: "none",
+                                  display: "inline-flex", alignItems: "center", gap: 6,
+                                  fontSize: 12, fontWeight: 500, padding: "5px 11px", borderRadius: 20, cursor: "pointer",
+                                  background: checked ? "var(--primary)" : "var(--bg)",
+                                  border: `1.5px solid ${checked ? "var(--primary)" : "var(--border)"}`,
+                                  color: checked ? "#fff" : "var(--text)",
+                                  boxShadow: checked ? "0 1px 4px rgba(0,0,0,0.12)" : "none",
+                                  transition: "all .13s", userSelect: "none", lineHeight: 1.2,
                                 }}
                               >
                                 <input
@@ -257,6 +258,7 @@ export function StagesBuilder({ stages, onChange, stageTypes, systemRoles, avail
                                   onChange={() => toggleComponent(row._key, name)}
                                   style={{ display: "none" }}
                                 />
+                                <span style={{ fontSize: 12, fontWeight: 800, opacity: checked ? 1 : 0.6 }}>{checked ? "✓" : "+"}</span>
                                 {name}
                               </label>
                             );

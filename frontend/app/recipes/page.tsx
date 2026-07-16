@@ -632,6 +632,17 @@ export default function RecipesPage() {
     setValidating(null);
   }
 
+  // Заголовок шага мастера «Создать продукт» (номер в кружке + заголовок + подсказка)
+  const stepHead = (n: number, title: string, hint?: string) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+      <span style={{ width: 24, height: 24, borderRadius: "50%", background: "var(--primary)", color: "#fff", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{title}</div>
+        {hint && <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{hint}</div>}
+      </div>
+    </div>
+  );
+
   const products = [...new Set([...recipes.map(r => r.product_name), ...catalog.map(c => c.name)])].sort();
 
   // Полуфабрикаты (для source='product'): изделия с их доступным остатком на складе ГП.
@@ -1031,8 +1042,8 @@ export default function RecipesPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           {cpError && <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">{cpError}</div>}
           <div>
-            <label>Название изделия *</label>
-            <input list="product-list" value={cpProductName} onChange={e => setCpProductName(e.target.value)} placeholder="Например: ГМ-10 (существующие — из подсказки)" />
+            {stepHead(1, "Название изделия", "Существующие подставятся из подсказки")}
+            <input list="product-list" value={cpProductName} onChange={e => setCpProductName(e.target.value)} placeholder="Например: ГМ-10" />
             {cpProductName.trim() && products.some(p => p.toLowerCase() === cpProductName.trim().toLowerCase()) && (
               <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
                 ⚠ Изделие с таким именем уже есть — компоненты/этапы добавятся к нему.
@@ -1042,7 +1053,7 @@ export default function RecipesPage() {
 
           {/* Отделы-исполнители — мультивыбор */}
           <div>
-            <label>Отделы-исполнители * <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(можно несколько — маршрут соберётся автоматически)</span></label>
+            {stepHead(2, "Отделы-исполнители", "Можно несколько — маршрут соберётся автоматически")}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 8 }}>
               {[
                 { value: "SMD",        label: "СМД",        icon: "🔬", color: "#8b5cf6", desc: "Поверхностный монтаж" },
@@ -1105,12 +1116,21 @@ export default function RecipesPage() {
             )}
           </div>
 
-          {/* Этапы производства */}
+          {/* Шаг 3: Компоненты — сначала вводим детали, чтобы потом разложить их по этапам */}
           <div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Этапы производства</span>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Укажите какие отделы и в каком порядке работают</span>
-            </div>
+            {stepHead(3, "Компоненты", "Что берём со склада. Enter — новая строка")}
+            <CompRowsTable
+              rows={cpRows} setRows={setCpRows}
+              showBoardSide={productType === "SMD" || cpStages.some(s => s.stage_type === "smd")}
+              components={allComponents}
+            />
+          </div>
+
+          {/* Шаг 4: Этапы — здесь раскидываем компоненты по этапам галочками */}
+          <div>
+            {stepHead(4, "Этапы производства", cpRows.some(r => r.component_name.trim())
+              ? "На каждом этапе отметь его детали и впиши, что выходит (полуфабрикат)"
+              : "Добавь компоненты выше — и сможешь отметить их на этапах")}
             <StagesBuilder
               stages={cpStages}
               onChange={setCpStages}
@@ -1118,23 +1138,6 @@ export default function RecipesPage() {
               systemRoles={systemRoles}
               availableComponents={cpRows.filter(r => r.component_name.trim()).map(r => r.component_name.trim())}
               productName={cpProductName}
-            />
-          </div>
-
-          {/* Компоненты */}
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <div style={{ width: 10, height: 10, borderRadius: "50%", background:
-                productType === "SMD" ? "#8b5cf6" :
-                productType === "Сборка" ? "#0ea5e9" :
-                productType === "3D Печать" ? "#10b981" : "#f59e0b"
-              }} />
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Компоненты</span>
-            </div>
-            <CompRowsTable
-              rows={cpRows} setRows={setCpRows}
-              showBoardSide={productType === "SMD" || cpStages.some(s => s.stage_type === "smd")}
-              components={allComponents}
             />
           </div>
         </div>
